@@ -1,0 +1,906 @@
+---
+title: "Ekonometria Finansowa i Dynamiczna
+
+Projekt 1"
+author: "Karol Kuciński, Mateusz Mulka, Maciej Nagły"
+date: "2024-10-10"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r message=FALSE, warning=FALSE, echo=FALSE} 
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(kableExtra)
+library(tidyverse)
+library(tseries)
+library(vars)
+library(ggplot2)
+library(knitr)
+library(readxl)
+library(e1071)
+library(lmtest)
+```
+
+# Wstęp
+
+Projekt dotyczy analizy danych historycznych indeksu WIG20, który jest jednym z najważniejszych wskaźników giełdowych w Polsce. Indeks ten obejmuje 20 największych i najbardziej płynnych spółek notowanych na warszawskiej giełdzie papierów wartościowych. Analiza danych WIG20 jest istotna dla inwestorów, analityków oraz wszystkich zainteresowanych rynkiem kapitałowym, ponieważ pozwala na zrozumienie dynamiki rynku oraz identyfikację trendów, które mogą wpływać na decyzje inwestycyjne.
+
+W ramach projektu wykorzystano dane pobrane z storny stooq, zawierające historyczne dane o wartości cen zamknięcia indeksu WIG20 na przestrzeni 10lat. Celem analizy jest przekształcenie surowych danych w formę umożliwiającą wyciąganie wniosków dotyczących zachowań rynku, z uwzględnieniem miesięcznych trendów i wzorców.
+
+# Cel projektu
+
+Analiza historycznych danych indeksu WIG20 – Wydobycie istotnych informacji z danych giełdowych w celu zrozumienia zachowań indeksu na przestrzeni lat.
+
+Projekt ma na celu również zwiększenie zrozumienia mechanizmów rynkowych, co jest istotne dla każdego, kto pragnie inwestować w polski rynek giełdowy.
+
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+## Pobieranie danych  - dane ostatni dzień miesiąca
+wig_m_last_day<-read_csv("wig20_ostatniDzienMiesiaca.csv")
+
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Pobieranie danych  - pierwszy dzień miesiąca
+wig_d <- read_csv("wig20_d.csv")
+
+wig_d <- wig_d %>%
+  mutate(Data = as.Date(Data, format = "%Y-%m-%d"))
+
+wig_d_1st_day <- wig_d %>%
+  group_by(YearMonth = format(Data, "%Y-%m")) %>%             # Grupowanie po roku i miesiącu
+  filter(Data == min(Data[day(Data) >= 1], na.rm = TRUE)) %>% # Wybór najwcześniejszego dnia >= 1 (czyli 1, jeśli istnieje, lub najbliższego kolejnego)
+  ungroup()
+
+```
+
+
+
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Pobieranie danych  - siódmy dzień miesiąca
+wig_d<-read_csv("wig20_d.csv")
+
+wig_d <- wig_d %>%
+  mutate(Data = as.Date(Data, format = "%Y-%m-%d"))
+
+
+wig_d_7th_day <- wig_d %>%
+  group_by(YearMonth = format(Data, "%Y-%m")) %>%    
+  filter(Data == max(Data[day(Data) <= 7])) %>%      
+  ungroup()
+
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Pobieranie danych - dziesiąty dzień miesiąca 
+wig_d <- read_csv("wig20_d.csv")
+
+
+wig_d <- wig_d %>%
+  mutate(Data = as.Date(Data, format = "%Y-%m-%d"))
+
+
+wig_d_10th_day <- wig_d %>%
+  group_by(YearMonth = format(Data, "%Y-%m")) %>%            
+  filter(Data == max(Data[day(Data) <= 10], na.rm = TRUE)) %>%  
+  ungroup()
+
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Pobieranie danych - piętnasty dzień miesiąca
+wig_d <- read_csv("wig20_d.csv")
+
+wig_d <- wig_d %>%
+  mutate(Data = as.Date(Data, format = "%Y-%m-%d"))
+
+wig_d_15th_day <- wig_d %>%
+  group_by(YearMonth = format(Data, "%Y-%m")) %>%                    
+  filter(Data == max(Data[day(Data) <= 15], na.rm = TRUE)) %>%    
+  ungroup()
+
+```
+
+## Opis przeprowadzonych działań
+
+W ramach przeprowadzonego zadania obliczaliśmy stopy zwrotu na podstawie danych giełdowych, wykorzystując do tego dwie funkcje: do obliczania stopy zwrotu logarytmicznej oraz klasycznej stopy zwrotu.
+
+Funkcja `calculate_log_return` oblicza stopę zwrotu logarytmiczną, która jest bardziej odpowiednia do analizy szeregów czasowych ze względu na swoje właściwości statystyczne, m.in. możliwość sumowania. W tym celu wykorzystujemy logarytm naturalny z ilorazu ceny zamknięcia z kolejnych dni. Funkcja zwraca nową ramkę danych zawierającą daty oraz obliczone stopy zwrotu.
+
+Funkcja `calculate_rate_of_return` oblicza klasyczną stopę zwrotu, bazując na różnicy cen zamknięcia z kolejnych dni, co jest bardziej intuicyjnym podejściem do analizy zwrotu z inwestycji. Obie funkcje dokonują transformacji danych oraz usuwają pierwszy wiersz z wynikiem `NA`, który wynika z operacji na przesuniętych danych.
+
+## Wzory użyte do obliczeń
+
+1. **Stopa zwrotu logarytmiczna**:  
+   \[
+   R_{\text{log}} = 100 \times \log\left(\frac{P_t}{P_{t-1}}\right)
+   \]
+   gdzie:  
+   \( R_{\text{log}} \) - stopa zwrotu logarytmiczna  
+   \( P_t \) - cena zamknięcia w dniu \( t \)  
+   \( P_{t-1} \) - cena zamknięcia w dniu \( t-1 \)
+
+2. **Stopa zwrotu klasyczna**:  
+   \[
+   R_{\text{klasyczna}} = 100 \times \frac{P_t - P_{t-1}}{P_{t-1}}
+   \]
+   gdzie:  
+   \( R_{\text{klasyczna}} \) - stopa zwrotu klasyczna  
+   \( P_t \) - cena zamknięcia w dniu \( t \)  
+   \( P_{t-1} \) - cena zamknięcia w dniu \( t-1 \) 
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Funkcje do obliczania stóp zwrotu 
+calculate_log_return  <- function(data, column_name) {
+  new_data <- data %>%
+    mutate(stopa_logarytmiczna = 100 * (log(Zamkniecie / lag(Zamkniecie))))
+  new_data <- slice(new_data, -1) # Usunięcie pierwszego wiersza (z wartością NA)
+  new_data <- new_data[, c("Data", "stopa_logarytmiczna"), drop = FALSE]
+  return(new_data)
+}
+
+calculate_rate_of_return  <- function(data, column_name) {
+  new_data <- data %>%
+    mutate(stopa_zwrotu = 100 * (Zamkniecie - lag(Zamkniecie)) / lag(Zamkniecie))
+  new_data <- slice(new_data, -1) # Usunięcie pierwszego wiersza (z wartością NA)
+  new_data <- new_data[, c("Data", "stopa_zwrotu"), drop = FALSE]
+  return(new_data)
+}
+
+
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Obliczenia stóp zwrotu 
+# Ostatni dzień 
+log_return_last_day <- calculate_log_return(wig_m_last_day, Zamkniecie)
+rate_of_return_last_day <- calculate_rate_of_return(wig_m_last_day, Zamkniecie)
+
+# Pierwszy dzień 
+log_return_1st_day <- calculate_log_return(wig_d_1st_day, Zamkniecie)
+rate_of_return_1st_day <- calculate_rate_of_return(wig_d_1st_day, Zamkniecie)
+
+# Siódmy dzień 
+log_return_7th_day <- calculate_log_return(wig_d_7th_day, Zamkniecie)
+rate_of_return_7th_day <-calculate_rate_of_return(wig_d_7th_day, Zamkniecie)
+
+# Dziesiąty dzień 
+log_return_10th_day <- calculate_log_return(wig_d_10th_day, Zamkniecie)
+rate_of_return_10th_day <-calculate_rate_of_return(wig_d_10th_day, Zamkniecie)
+
+# Piętnasty dzień 
+log_return_15th_day <- calculate_log_return(wig_d_15th_day, Zamkniecie)
+rate_of_return_15th_day <-calculate_rate_of_return(wig_d_15th_day, Zamkniecie)
+```
+
+## Podstawowe statystyki
+
+W ramach analizy szeregu czasowego obliczyliśmy podstawowe statystyki dla różnych interwałów stóp zwrotu, zarówno klasycznych, jak i logarytmicznych. Statystyki te obejmują:
+
+- Średnią wartość stopy zwrotu,
+- Minimalną wartość,
+- Maksymalną wartość,
+- Odchylenie standardowe,
+- Skośność,
+- Kurtozę.
+
+Te miary pozwalają lepiej zrozumieć rozkład zwrotów oraz ich zmienność w czasie, jak również ewentualne odchylenia od normalnego rozkładu (skośność) i "spłaszczenie" rozkładu (kurtoza).
+
+### Wzory do obliczeń statystyk:
+
+1. **Średnia arytmetyczna**:  
+   \[
+   \mu = \frac{1}{n} \sum_{i=1}^{n} R_i
+   \]  
+   gdzie:  
+   \( \mu \) – średnia arytmetyczna stóp zwrotu,  
+   \( R_i \) – stopa zwrotu w okresie \( i \),  
+   \( n \) – liczba obserwacji.
+
+2. **Minimalna wartość**:  
+   \[
+   R_{\text{min}} = \min(R_1, R_2, \dots, R_n)
+   \]  
+   gdzie:  
+   \( R_{\text{min}} \) – minimalna wartość stopy zwrotu,  
+   \( R_i \) – stopa zwrotu w okresie \( i \).
+
+3. **Maksymalna wartość**:  
+   \[
+   R_{\text{max}} = \max(R_1, R_2, \dots, R_n)
+   \]  
+   gdzie:  
+   \( R_{\text{max}} \) – maksymalna wartość stopy zwrotu,  
+   \( R_i \) – stopa zwrotu w okresie \( i \).
+
+4. **Odchylenie standardowe**:  
+   \[
+   \sigma = \sqrt{\frac{1}{n} \sum_{i=1}^{n} (R_i - \mu)^2}
+   \]  
+   gdzie:  
+   \( \sigma \) – odchylenie standardowe stóp zwrotu,  
+   \( \mu \) – średnia arytmetyczna stóp zwrotu,  
+   \( R_i \) – stopa zwrotu w okresie \( i \),  
+   \( n \) – liczba obserwacji.
+
+5. **Skośność**:  
+   \[
+   \text{Skośność} = \frac{1}{n} \sum_{i=1}^{n} \left(\frac{R_i - \mu}{\sigma}\right)^3
+   \]  
+   gdzie:  
+   \( R_i \) – stopa zwrotu w okresie \( i \),  
+   \( \mu \) – średnia arytmetyczna stóp zwrotu,  
+   \( \sigma \) – odchylenie standardowe stóp zwrotu,  
+   \( n \) – liczba obserwacji.
+
+6. **Kurtoza**:  
+   \[
+   \text{Kurtoza} = \frac{1}{n} \sum_{i=1}^{n} \left(\frac{R_i - \mu}{\sigma}\right)^4 - 3
+   \]  
+   gdzie:  
+   \( R_i \) – stopa zwrotu w okresie \( i \),  
+   \( \mu \) – średnia arytmetyczna stóp zwrotu,  
+   \( \sigma \) – odchylenie standardowe stóp zwrotu,  
+   \( n \) – liczba obserwacji,  
+   3 – korekta zapewniająca, że kurtoza dla rozkładu normalnego wynosi 0.
+
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+## Podstawowe statystyki
+Basic_stats <- function(dane)
+{
+  srednia <- mean(dane$stopa_zwrotu)
+  min_wartosc <- min(dane$stopa_zwrotu)
+  max_wartosc <- max(dane$stopa_zwrotu)
+  odch_stand <- sd(dane$stopa_zwrotu)
+  skosnosc <- skewness(dane$stopa_zwrotu)
+  kurtoza <- kurtosis(dane$stopa_zwrotu)
+  return(c(srednia, min_wartosc, max_wartosc, odch_stand, skosnosc, kurtoza))
+}
+
+Basic_stats_log <- function(dane)
+{
+  srednia <- mean(dane$stopa_logarytmiczna)
+  min_wartosc <- min(dane$stopa_logarytmiczna)
+  max_wartosc <- max(dane$stopa_logarytmiczna)
+  odch_stand <- sd(dane$stopa_logarytmiczna)
+  skosnosc <- skewness(dane$stopa_logarytmiczna)
+  kurtoza <- kurtosis(dane$stopa_logarytmiczna)
+  return(c(srednia, min_wartosc, max_wartosc, odch_stand, skosnosc, kurtoza))
+}
+
+list_of_returns <- list(
+  "last_day" = rate_of_return_last_day, 
+  "1st_day" = rate_of_return_1st_day, 
+  "7th_day" = rate_of_return_7th_day, 
+  "10th_day" = rate_of_return_10th_day, 
+  "15th_day" = rate_of_return_15th_day
+)
+
+wyniki <- data.frame(
+  Statystyka = c("Średnia", "Min", "Max", "Odch. stand.", "Skośność", "Kurtoza")
+)
+
+for (nazwa in names(list_of_returns)) {
+  wyniki[[nazwa]] <- Basic_stats(list_of_returns[[nazwa]])
+}
+
+list_of_returns_log <- list(
+  "last_day" = log_return_last_day, 
+  "1st_day" = log_return_1st_day, 
+  "7th_day" = log_return_7th_day, 
+  "10th_day" = log_return_10th_day, 
+  "15th_day" = log_return_15th_day
+)
+
+wyniki_log <- data.frame(
+  Statystyka = c("Średnia", "Min", "Max", "Odch. stand.", "Skośność", "Kurtoza")
+)
+
+for (nazwa in names(list_of_returns_log)) {
+  wyniki_log[[nazwa]] <- Basic_stats_log(list_of_returns_log[[nazwa]])
+}
+```
+
+```{r  message=FALSE, warning=FALSE, echo=FALSE}
+
+kable(wyniki, format = "html", caption = "Statystyki dla stóp zwrotów") %>%
+  kable_styling(full_width = F, position = "left", bootstrap_options = c("striped", "hover", "condensed"))
+```
+ 
+```{r  message=FALSE, warning=FALSE, echo=FALSE}
+kable(wyniki_log, format = "html", caption = "Statystyki dla logarytmicznych stóp zwrotów") %>%
+  kable_styling(full_width = F, position = "left", bootstrap_options = c("striped", "hover", "condensed"))
+```
+## Stopy zwrotów
+
+W przypadku stóp zwrotów, najwyższa średnia występuje w piętnastym dniu miesiąca (0.2272), co sugeruje, że ten dzień jest korzystny dla inwestycji. Najniższa średnia dotyczy pierwszego dnia (0.1399), co wskazuje na mniejsze zyski na początku miesiąca.
+
+Piętnasty dzień charakteryzuje się największym ryzykiem, z minimalnym zwrotem wynoszącym -35.42, ale maksymalny zwrot wynoszący 26.65 wskazuje na duży potencjał zysku. Pierwszy dzień miesiąca również ma znaczący maksymalny zwrot (19.10), co sugeruje możliwości zysku dla inwestorów, trzeba jednak brać pod uwagę niską średnią zwrotu sugerującą potencjalne ryzyko.
+
+Odchylenie standardowe dla piętnastego dnia (6.8505) jest najwyższe, co potwierdza dużą zmienność wyników. Pozostałe dni prezentują podobne odchylenia, sugerując stabilniejsze wyniki niż środek miesiąca.
+
+Skośność jest bliska zeru dla większości dni, co sugeruje symetrię rozkładów, jednak piętnasty dzień ma skośność -0.6415, co wskazuje na lewy ogon rozkładu i większą liczbę niskich zwrotów. Kurtoza wynosząca 6.2575 wskazuje również na wyższe prawdopodobieństwo wystąpienia skrajnych wyników.
+
+## Logarytmiczne stopy zwrotów
+
+Analizując logarytmiczne stopy zwrotów, najwyższa średnia występuje w ostatnim dniu miesiąca (0.0215). Pozostałe dni mają ujemne średnie, co może wskazywać na potencjalne straty lub minimalne zyski.
+
+Minimalna logarytmiczna stopa zwrotu wynosząca -43.73 w  piętnastym dniu oraz niższe maksymalne wartości sugerują większe ryzyko straty w logarytmicznych stóp zwrotów. Odchylenia standardowe są porównywalne z odchyleniami dla stóp zwrotów, a najwyższe występuje w piętnastym dniu (7.1487), co potwierdza dużą zmienność.
+
+Skośność jest ujemna dla większości dni, co sugeruje przesunięcie rozkładu w lewo i większą liczbę niskich zwrotów. Kurtoza w piętnastym dniu wynosząca 10.6919 jest bardzo wysoka, co wskazuje na "grubsze ogony" rozkładu i wyższe ryzyko wystąpienia skrajnych wartości.
+
+
+## Testy normalności i autokorelacji szeregów czasowych
+
+W analizie szeregów czasowych niezwykle istotne jest zbadanie, czy rozkład stóp zwrotu odpowiada rozkładowi normalnemu, oraz czy występuje autokorelacja, czyli zależność między obserwacjami w kolejnych okresach. W tym celu zastosowaliśmy kilka klasycznych testów, które opisaliśmy poniżej.
+
+### Testy normalności
+
+1. **Test Shapiro-Wilka**
+
+Test Shapiro-Wilka sprawdza hipotezę zerową o normalności rozkładu badanej zmiennej. Statystyka testu opiera się na porównaniu obserwowanych wartości z wartościami teoretycznymi, jakie można by oczekiwać przy rozkładzie normalnym.
+
+Wzór statystyki testu Shapiro-Wilka:
+\[
+W = \frac{\left( \sum_{i=1}^{n} a_i x_{(i)} \right)^2}{\sum_{i=1}^{n} (x_i - \bar{x})^2}
+\]
+gdzie:  
+\( W \) – statystyka testu,  
+\( a_i \) – stałe zależne od macierzy kowariancji rozkładu normalnego,  
+\( x_{(i)} \) – uporządkowane wartości próbki,  
+\( \bar{x} \) – średnia próby,  
+\( n \) – liczba obserwacji.
+
+Interpretacja:  
+- Hipoteza zerowa: Dane pochodzą z rozkładu normalnego.  
+- Hipoteza alternatywna: Dane nie pochodzą z rozkładu normalnego.  
+- Jeśli wartość p jest mniejsza niż poziom istotności (zwykle 0,05), odrzucamy hipotezę zerową.
+
+2. **Test Jarque-Bera**
+
+Test Jarque-Bera bada, czy próbka danych ma skośność i kurtozę odpowiadające rozkładowi normalnemu. Test ten opiera się na obliczeniu dwóch parametrów: skośności i kurtozy, a następnie sprawdzeniu, jak bardzo różnią się one od wartości oczekiwanych w rozkładzie normalnym.
+
+Wzór statystyki testu Jarque-Bera:
+\[
+JB = \frac{n}{6} \left( S^2 + \frac{(K - 3)^2}{4} \right)
+\]
+gdzie:  
+\( n \) – liczba obserwacji,  
+\( S \) – skośność,  
+\( K \) – kurtoza.
+
+Interpretacja:  
+- Hipoteza zerowa: Dane mają normalny rozkład (skośność = 0, kurtoza = 3).  
+- Hipoteza alternatywna: Dane nie mają rozkładu normalnego.  
+- Wartość p poniżej 0,05 wskazuje na odrzucenie hipotezy zerowej.
+
+3. **Test Kolmogorova-Smirnova**
+
+Test Kolmogorova-Smirnova porównuje rozkład empiryczny z rozkładem teoretycznym (np. normalnym) i mierzy maksymalną różnicę między dystrybuantą empiryczną a dystrybuantą teoretyczną.
+
+Wzór statystyki testu:
+\[
+D_n = \sup_x | F_n(x) - F(x) |
+\]
+gdzie:  
+\( D_n \) – statystyka testu,  
+\( F_n(x) \) – dystrybuanta empiryczna,  
+\( F(x) \) – dystrybuanta teoretyczna,  
+\( \sup_x \) – supremum z wartości bezwzględnych różnic.
+
+Interpretacja:  
+- Hipoteza zerowa: Rozkład empiryczny nie różni się istotnie od rozkładu teoretycznego (np. normalnego).  
+- Hipoteza alternatywna: Rozkład empiryczny różni się od rozkładu teoretycznego.  
+- Wartość p mniejsza niż poziom istotności (0,05) wskazuje na odrzucenie hipotezy zerowej.
+
+
+
+## Wyniki
+
+
+
+## Testy normalności 
+
+### Wyniki dla stóp zwrotu
+ 
+### Pierwszy dzień miesiąca:
+- Shapiro-Wilk test: W = 0.98457, p-value = 0.1836
+- Jarque-Bera test: X-squared = 4.7929, df = 2, p-value = 0.09104
+- Kolmogorov-Smirnov test: D = 0.06335, p-value = 0.7165
+
+Wnioski:
+
+Wyniki testów dla pierwszego dnia miesiąca sugerują, że dane są bliskie normalności. Test Shapiro-Wilka i Kolmogorova-Smirnova nie odrzucają hipotezy normalności. Test Jarque-Bera sugeruje, że dane mogą odbiegać od normalności, ale wynik nie jest znacząco niski (p-value = 0.09104). Podsumowując - brak podstaw do odrzucenia H0, dane pochodzą z rozkładu normalnego.
+
+### Siódmy dzień miesiąca:
+- Shapiro-Wilk test: W = 0.98266, p-value = 0.1224
+- Jarque-Bera test: X-squared = 3.0632, df = 2, p-value = 0.2162
+- Kolmogorov-Smirnov test: D = 0.057694, p-value = 0.8154
+
+Wnioski:
+
+Testy dla siódmego dnia miesiąca nie wskazują na istotne odchylenia od rozkładu normalnego. Wszystkie testy sugerują, że dane są zgodne z rozkładem normalnym.
+
+### Dziesiąty dzień miesiąca:
+- Shapiro-Wilk test: W = 0.96578, p-value = 0.003606
+- Jarque-Bera test: X-squared = 35.44, df = 2, p-value = 2.016e-08
+- Kolmogorov-Smirnov test: D = 0.075157, p-value = 0.5013
+
+Wnioski: 
+
+Dane dla dziesiątego dnia miesiąca nie są zgodne z rozkładem normalnym. Zarówno test Shapiro-Wilka, jak i Jarque-Bera silnie odrzucają hipotezę normalności. Kolmogorov-Smirnov wskazuje na brak odchyleń, jednak pozostałe testy sugerują rak normalności danych.
+
+### Piętnasty dzień miesiąca:
+- Shapiro-Wilk test: W = 0.92008, p-value = 2.237e-06
+- Jarque-Bera test: X-squared = 215.82, df = 2, p-value  2.2e-16
+- Kolmogorov-Smirnov test: D = 0.063446, p-value = 0.7147
+
+Wnioski: 
+
+Dane dla piętnastego dnia miesiąca wyraźnie odbiegają od rozkładu normalnego. Zarówno test Shapiro-Wilka, jak i Jarque-Bera silnie odrzucają hipotezę normalności, co wskazuje na rozkład danych niezgodny z rozkładem normalnym.
+
+### Ostatni dzień miesiąca:
+- Shapiro-Wilk test: W = 0.99044, p-value = 0.5676
+- Jarque-Bera test: X-squared = 2.0788, df = 2, p-value = 0.3537
+- Kolmogorov-Smirnov test: D = 0.054385, p-value = 0.8666
+
+Wnioski:
+
+Testy dla ostatniego dnia miesiąca wskazują na zgodność danych z rozkładem normalnym. Wszystkie testy sugerują brak odchyleń od normalności.
+
+
+### Podsumowanie:
+
+Pierwszy, siódmy i ostatni dzień miesiąca dzień miesiąca: Dane te są zgodne z rozkładem normalnym, choć dla pierwszego dnia p-value z testu Jarque-Bera zbliża się do wartości granicznej.
+
+Dziesiąty i piętnasty dzień miesiąca: Dane odbiegają od rozkładu normalnego, co potwierdzają testy Shapiro-Wilka i Jarque-Bera. Mimo tego z uwagi na dużą liczbę obserwacji mamy nadzieję, że nie wpłynie to znacząco na wyniki.
+
+### Wyniki dla logarytmicznych stóp zwrotu
+
+### Pierwszy dzień miesiąca:
+- Shapiro-Wilk test: W = 0.98053, p-value = 0.07735
+- Jarque-Bera test: X-squared = 8.0269, df = 2, p-value = 0.01807
+- Kolmogorov-Smirnov test: D = 0.064155, p-value = 0.7017
+
+Wnioski: 
+
+Dla pierwszego dnia miesiąca, test Shapiro-Wilka sugeruje bliskość do normalności, chociaż p-value jest nieco poniżej 0.08. Test Jarque-Bera wskazuje na istotne odchylenia, co sugeruje, że dane mogą nie być normalnie rozłożone. Test Kolmogorova-Smirnova nie odrzuca hipotezy normalności.
+
+### Siódmy dzień miesiąca:
+- Shapiro-Wilk test: W = 0.98328, p-value = 0.1398
+- Jarque-Bera test: X-squared = 3.2254, df = 2, p-value = 0.1993
+- Kolmogorov-Smirnov test: D = 0.060725, p-value = 0.7637
+
+Wnioski: 
+
+Dla siódmego dnia miesiąca testy sugerują, że dane są zgodne z rozkładem normalnym. Testy Shapiro-Wilka i Kolmogorova-Smirnova nie wskazują na odchylenia, natomiast test Jarque-Bera nie odrzuca hipotezy normalności.
+
+### Dziesiąty dzień miesiąca:
+- Shapiro-Wilk test: W = 0.95419, p-value = 0.0004175
+- Jarque-Bera test: X-squared = 62.118, df = 2, p-value = 3.242e-14
+- Kolmogorov-Smirnov test: D = 0.084493, p-value = 0.3534
+
+Wnioski: 
+
+Dla dziesiątego dnia miesiąca testy wskazują na brak zgodności z rozkładem normlanym. Test Shapiro-Wilka i Jarque-Bera odrzucają hipotezę zerową. Kolmogorov-Smirnov wskazuje na zgodność z rozkładem normalnym, ale p-value dla pozostałych testów jest bardzo niskie.
+
+### Piętnasty dzień miesiąca:
+- Shapiro-Wilk test: W = 0.87573, p-value = 1.22e-08
+- Jarque-Bera test: X-squared = 654.87, df = 2, p-value = 2.2e-16
+- Kolmogorov-Smirnov test: D = 0.074912, p-value = 0.5056
+
+Wnioski: 
+
+Dla piętnastego dnia miesiąca dane zdecydowanie odbiegają od normalności, co potwierdzają wyniki testów Shapiro-Wilka i Jarque-Bera. Test Kolmogorova-Smirnova sugeruje zgodność z rozkładem normalnym, ale to nie zmienia ogólnego obrazu.
+
+### Ostatni dzień miesiąca:
+- Shapiro-Wilk test: W = 0.99169, p-value = 0.6867
+- Jarque-Bera test: X-squared = 0.90517, df = 2, p-value = 0.636
+- Kolmogorov-Smirnov test: D = 0.049087, p-value = 0.9325
+
+Wnioski: 
+
+Testy dla ostatniego dnia miesiąca wskazują na zgodność z rozkładem normalnym. Wszystkie testy sugerują brak istotnych odchyleń.
+
+### Podsumowanie:
+- Pierwszy, siódmy i ostatni dzień miesiąca: Dane są bliskie normalności, chociaż test Jarque-Bera dla pierwszego dnia sugeruje, że dane mogą nieznacznie odstawać od rozkładu normalnego.
+- Dziesiąty i piętnasty dzień miesiąca: Dane wykazują wyraźne odchylenia od rozkładu normalnego, co jest podkreślone przez wyniki Shapiro-Wilka oraz Jarque-Bera.
+
+
+## Testy autokorelacji
+
+1. **Autokorelacja (ACF)**
+
+Autokorelacja mierzy, w jakim stopniu wartości zmiennej w jednym okresie są skorelowane z wartościami w poprzednich okresach. Funkcja autokorelacji (ACF) przedstawia zależność między zmiennymi w różnych opóźnieniach.
+
+Wzór na autokorelację:
+\[
+\rho_k = \frac{\sum_{t=1}^{T-k} (x_t - \bar{x})(x_{t+k} - \bar{x})}{\sum_{t=1}^{T} (x_t - \bar{x})^2}
+\]
+gdzie:  
+\( \rho_k \) – współczynnik autokorelacji dla opóźnienia \( k \),  
+\( x_t \) – wartość zmiennej w okresie \( t \),  
+\( \bar{x} \) – średnia zmiennej,  
+\( T \) – liczba obserwacji,  
+\( k \) – liczba opóźnień.
+
+Interpretacja:  
+- Autokorelacja dodatnia sugeruje, że wzrosty w jednym okresie są związane ze wzrostami w następnym.  
+- Autokorelacja ujemna wskazuje, że wzrosty są związane ze spadkami.  
+- Wartości bliskie 0 oznaczają brak autokorelacji.
+
+2. **Test Breuscha-Godfreya (BG)**
+
+Test BG jest wykorzystywany do sprawdzenia, czy w modelu regresji występuje autokorelacja reszt o wyższych rzędach. Test ten analizuje, czy istnieje zależność między resztami z różnych okresów.
+
+Wzór statystyki testu BG:
+\[
+LM = T \cdot R^2
+\]
+gdzie:  
+\( T \) – liczba obserwacji,  
+\( R^2 \) – współczynnik determinacji z pomocniczej regresji.
+
+Interpretacja:  
+- Hipoteza zerowa: Brak autokorelacji reszt.  
+- Hipoteza alternatywna: Istnieje autokorelacja reszt.  
+- Wartość p poniżej 0,05 oznacza odrzucenie hipotezy zerowej, co sugeruje występowanie autokorelacji.
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+## Testy Normalności szeregu czasowego
+for (nazwa in names(list_of_returns)) {
+  df <- list_of_returns[[nazwa]]  
+  returns <- df[, 2]
+  
+  # Testy normalności
+  #print(paste("Shapiro-Wilk test dla", nazwa))
+  #print(shapiro.test(returns$stopa_zwrotu))
+
+  #print(paste("Jarque-Bera test dla", nazwa))
+  #print(jarque.bera.test(returns$stopa_zwrotu))
+
+  #print(paste("Kolmogorov-Smirnov test dla", nazwa))
+  #print(ks.test(returns$stopa_zwrotu, "pnorm", mean = mean(returns$stopa_zwrotu), sd = sd(returns$stopa_zwrotu)))
+  
+  #Autokorelacja
+  print(paste("ACF test dla", nazwa))
+  print(acf(returns$stopa_zwrotu))
+  
+  #print(paste("BG test dla", nazwa))
+  #print(bgtest(lm(returns$stopa_zwrotu ~ 1), order = 10))
+}
+
+for (nazwa in names(list_of_returns_log)) {
+  df <- list_of_returns_log[[nazwa]]  
+  returns <- df[, 2]
+  
+  # Testy normalności
+  #print(paste("Shapiro-Wilk test dla", nazwa))
+  #print(shapiro.test(returns$stopa_logarytmiczna))
+
+  #print(paste("Jarque-Bera test dla", nazwa))
+  #print(jarque.bera.test(returns$stopa_logarytmiczna))
+
+  #print(paste("Kolmogorov-Smirnov test dla", nazwa))
+  #print(ks.test(returns$stopa_logarytmiczna, "pnorm", mean = mean(returns$stopa_logarytmiczna), sd = sd(returns$stopa_logarytmiczna)))
+  
+  #Autokorelacja
+  
+  print(paste("ACF test dla", nazwa))
+  print(acf(returns$stopa_logarytmiczna))
+  
+  #print(paste("BG test dla", nazwa))
+  #print(bgtest(lm(returns$stopa_logarytmiczna ~ 1), order = 10))
+}
+
+```
+## Autokorelacja i test Breusch-Godfreya
+
+### ACF
+
+Analiza autokorelacji (ACF) dla wszystkich dni pokazuje, że autokorelacja przy różnych opóźnieniach jest na ogół niska, co sugeruje brak istotnej struktury czasowej. W prawie wszystkich przypadkach wykresy ACF wyglądają jak wykres białego szumu. Jedynym wyjątkiem jest wykres dla 15 dnia (zarówno w przypadku "normalnych" stóp zwrotu jak i logarytmicznych), gdzie widzimy kilka korelacji z lag5-lag10 z silnym odwróceniem trendu, jednak nawet w tym przypadku wykresy te są dość "spokojne", jedynie nieznacznie odbiegają od białego szumu. Możemy zatem przyjąć ogólne założenie, że nasze szeregi czasowe charakteryzują się niską autokorelacją na podstawie tych wykresów.
+
+### Test Breusch-Godfreya
+
+W ramach analizy autokorelacji reszt zastosowano test Breusch-Godfreya. Poniżej przedstawiamy wyniki testu dla stóp zwrotu oraz logarytmicznych stóp zwrotu w różnych dniach miesiąca.
+
+#### Stopy zwrotu
+
+1. **Ostatni dzień miesiąca**:
+   - LM test = 10.129, df = 10, p-value = 0.4293.
+   - Nie znaleziono podstaw do odrzucenia hipotezy zerowej. Oznacza to brak istotnej autokorelacji reszt.
+
+2. **Pierwszy dzień miesiąca**:
+   - LM test = 14.081, df = 10, p-value = 0.1693.
+   - Ponownie, brak podstaw do odrzucenia hipotezy zerowej, co sugeruje brak istotnej autokorelacji.
+
+3. **Siódmy dzień miesiąca**:
+   - LM test = 17.241, df = 10, p-value = 0.0692.
+   - W tym przypadku są minimalne podstawy do odrzucenia hipotezy zerowej, co sugeruje potencjalną autokorelację, jednak nie jest to statystycznie istotne.
+
+4. **Dziesiąty dzień miesiąca**:
+   - LM test = 22.441, df = 10, p-value = 0.01301.
+   - Mamy podstawy do odrzucenia hipotezy zerowej, co wskazuje na istotną autokorelację reszt.
+
+5. **Piętnasty dzień miesiąca**:
+   - LM test = 22.106, df = 10, p-value = 0.01457.
+   - Również tutaj mamy podstawy do odrzucenia hipotezy zerowej, co sugeruje istotną autokorelację.
+
+#### Logarytmiczne stopy zwrotu
+
+1. **Ostatni dzień miesiąca**:
+   - LM test = 22.106, df = 10, p-value = 0.01457.
+   - Znaleziono podstawy do odrzucenia hipotezy zerowej, co oznacza istotną autokorelację reszt.
+
+2. **Pierwszy dzień miesiąca**:
+   - LM test = 14.081, df = 10, p-value = 0.1693.
+   - Brak podstaw do odrzucenia hipotezy zerowej sugeruje, że autokorelacja nie występuje.
+
+3. **Siódmy dzień miesiąca**:
+   - LM test = 17.241, df = 10, p-value = 0.0692.
+   - Istnieją niewielkie podstawy do odrzucenia hipotezy zerowej, co sugeruje potencjalną autokorelację, jednak nie jest to statystycznie istotne.
+
+4. **Dziesiąty dzień miesiąca**:
+   - LM test = 22.441, df = 10, p-value = 0.01301.
+   - Mamy podstawy do odrzucenia hipotezy zerowej, co oznacza istotną autokorelację reszt.
+
+5. **Piętnasty dzień miesiąca**:
+   - LM test = 22.106, df = 10, p-value = 0.01457.
+   - Również tutaj mamy podstawy do odrzucenia hipotezy zerowej, co sugeruje istotną autokorelację.
+
+### Wnioski
+W analizowanych dniach zauważono istotną autokorelację reszt w przypadku ostatniego, dziesiątego i piętnastego dnia miesiąca. Dla pozostałych dni hipoteza zerowa nie została odrzucona.
+
+
+# Porównanie wartości oczekiwanych i wariancji stóp zwrotu
+
+W celu analizy różnic w średnich i wariancjach stóp zwrotu wykorzystujemy dwa testy statystyczne: test t i test F.
+
+## Test t
+
+Test t służy do porównania średnich dwóch grup. Przyjmuje on hipotezę zerową, która mówi, że nie ma istotnej różnicy między średnimi obu grup. Test t oblicza statystykę t zgodnie z następującym wzorem:
+
+\[
+t = \frac{\bar{x}_1 - \bar{x}_2}{\sqrt{s^2_p \left(\frac{1}{n_1} + \frac{1}{n_2}\right)}}
+\]
+
+gdzie:
+- \(\bar{x}_1, \bar{x}_2\) to średnie grup 1 i 2,
+- \(s^2_p\) to wspólna wariancja obliczana jako:
+
+\[
+s^2_p = \frac{(n_1 - 1)s_1^2 + (n_2 - 1)s_2^2}{n_1 + n_2 - 2}
+\]
+
+- \(s_1^2, s_2^2\) to wariancje grup 1 i 2,
+- \(n_1, n_2\) to liczby obserwacji w grupach 1 i 2.
+
+Wynik testu t jest porównywany z wartością krytyczną z rozkładu t-studenta, aby ustalić, czy hipoteza zerowa powinna zostać odrzucona.
+
+## Test F
+
+Test F służy do porównania wariancji dwóch grup. Hipoteza zerowa testu F mówi, że wariancje obu grup są równe. Test F oblicza statystykę F zgodnie z następującym wzorem:
+
+\[
+F = \frac{s_1^2}{s_2^2}
+\]
+
+gdzie:
+- \(s_1^2\) to wariancja grupy 1,
+- \(s_2^2\) to wariancja grupy 2.
+
+Statystyka F jest porównywana z wartością krytyczną z rozkładu F, co pozwala ocenić, czy istnieje istotna różnica między wariancjami grup.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Porównanie wartości oczekiwanych i wariancji stóp zwrotu
+compare_means_variances <- function(data1, data2, name1, name2) {
+  # Test t - porównanie średnich
+  t_test_result <- t.test(data1, data2, var.equal = FALSE)
+  
+  # Test F - porównanie wariancji
+  var_test_result <- var.test(data1, data2)
+  
+  # Wyniki
+#  cat(paste0("Porównanie średnich i wariancji między ", name1, " i ", name2, "\n"))
+#  cat("Test t (porównanie średnich):\n")
+ # print(t_test_result)
+  
+ # cat("\nTest F (porównanie wariancji):\n")
+#  print(var_test_result)
+ # cat("\n------------------------------------------\n")
+}
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Przygotowanie danych
+returns_data <- list_of_returns
+returns_data_log <- list_of_returns_log
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Porównania dla zwykłych stóp zwrotu
+compare_means_variances(returns_data$`1st_day`$stopa_zwrotu, returns_data$last_day$stopa_zwrotu, "Pierwszy dzień", "Ostatni dzień")
+compare_means_variances(returns_data$`1st_day`$stopa_zwrotu, returns_data$`7th_day`$stopa_zwrotu, "Pierwszy dzień", "Siódmy dzień")
+compare_means_variances(returns_data$`1st_day`$stopa_zwrotu, returns_data$`10th_day`$stopa_zwrotu, "Pierwszy dzień", "Dziesiąty dzień")
+compare_means_variances(returns_data$`1st_day`$stopa_zwrotu, returns_data$`15th_day`$stopa_zwrotu, "Pierwszy dzień", "Piętnasty dzień")
+
+compare_means_variances(returns_data$`7th_day`$stopa_zwrotu, returns_data$last_day$stopa_zwrotu, "Siódmy dzień", "Ostatni dzień")
+compare_means_variances(returns_data$`7th_day`$stopa_zwrotu, returns_data$`10th_day`$stopa_zwrotu, "Siódmy dzień", "Dziesiąty dzień")
+compare_means_variances(returns_data$`7th_day`$stopa_zwrotu, returns_data$`15th_day`$stopa_zwrotu, "Siódmy dzień", "Piętnasty dzień")
+
+compare_means_variances(returns_data$`10th_day`$stopa_zwrotu, returns_data$last_day$stopa_zwrotu, "Dziesiąty dzień", "Ostatni dzień")
+compare_means_variances(returns_data$`10th_day`$stopa_zwrotu, returns_data$`15th_day`$stopa_zwrotu, "Dziesiąty dzień", "Piętnasty dzień")
+
+compare_means_variances(returns_data$`15th_day`$stopa_zwrotu, returns_data$last_day$stopa_zwrotu, "Piętnasty dzień", "Ostatni dzień")
+compare_means_variances(returns_data$`15th_day`$stopa_zwrotu, returns_data$`10th_day`$stopa_zwrotu, "Piętnasty dzień", "Dziesiąty dzień")
+
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Porównanie dla logarytmicznych stop zwrotu
+compare_means_variances(returns_data_log$`1st_day`$stopa_logarytmiczna, returns_data_log$last_day$stopa_logarytmiczna, "Pierwszy dzień (log)", "Ostatni dzień (log)")
+compare_means_variances(returns_data_log$`1st_day`$stopa_logarytmiczna, returns_data_log$`7th_day`$stopa_logarytmiczna, "Pierwszy dzień (log)", "Siódmy dzień (log)")
+compare_means_variances(returns_data_log$`1st_day`$stopa_logarytmiczna, returns_data_log$`10th_day`$stopa_logarytmiczna, "Pierwszy dzień (log)", "Dziesiąty dzień (log)")
+compare_means_variances(returns_data_log$`1st_day`$stopa_logarytmiczna, returns_data_log$`15th_day`$stopa_logarytmiczna, "Pierwszy dzień (log)", "Piętnasty dzień (log)")
+
+compare_means_variances(returns_data_log$`7th_day`$stopa_logarytmiczna, returns_data_log$last_day$stopa_logarytmiczna, "Siódmy dzień (log)", "Ostatni dzień (log)")
+compare_means_variances(returns_data_log$`7th_day`$stopa_logarytmiczna, returns_data_log$`10th_day`$stopa_logarytmiczna, "Siódmy dzień (log)", "Dziesiąty dzień (log)")
+compare_means_variances(returns_data_log$`7th_day`$stopa_logarytmiczna, returns_data_log$`15th_day`$stopa_logarytmiczna, "Siódmy dzień (log)", "Piętnasty dzień (log)")
+
+compare_means_variances(returns_data_log$`10th_day`$stopa_logarytmiczna, returns_data_log$last_day$stopa_logarytmiczna, "Dziesiąty dzień (log)", "Ostatni dzień (log)")
+compare_means_variances(returns_data_log$`10th_day`$stopa_logarytmiczna, returns_data_log$`15th_day`$stopa_logarytmiczna, "Dziesiąty dzień (log)", "Piętnasty dzień (log)")
+
+compare_means_variances(returns_data_log$`15th_day`$stopa_logarytmiczna, returns_data_log$last_day$stopa_logarytmiczna, "Piętnasty dzień (log)", "Ostatni dzień (log)")
+compare_means_variances(returns_data_log$`15th_day`$stopa_logarytmiczna, returns_data_log$`10th_day`$stopa_logarytmiczna, "Piętnasty dzień (log)", "Dziesiąty dzień (log)")
+
+```
+
+# Analiza stóp zwrotu
+
+### Tabela z wynikami testu t
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+knitr::kable(data.frame(
+  Porównanie = c(
+    "Pierwszy dzień vs Ostatni dzień", "Pierwszy dzień vs Siódmy dzień", 
+    "Pierwszy dzień vs Dziesiąty dzień", "Pierwszy dzień vs Piętnasty dzień", 
+    "Siódmy dzień vs Ostatni dzień", "Siódmy dzień vs Dziesiąty dzień", 
+    "Siódmy dzień vs Piętnasty dzień", "Dziesiąty dzień vs Ostatni dzień", 
+    "Dziesiąty dzień vs Piętnasty dzień", "Piętnasty dzień vs Ostatni dzień"
+  ),
+  `Uśredniona stopa zwrotu dla pierwszej wartości` = c(
+    -0.0456, -0.0456, -0.0456, -0.0456, 0.0032, 0.0032, 0.0032, -0.0152, -0.0152, -0.0084
+  ),
+  `Uśredniona stopa zwrotu dla drugiej wartości` = c(
+    0.0208, 0.0032, -0.0152, -0.0084, 0.0208, -0.0152, -0.0084, 0.0208, -0.0084, 0.0208
+  ),
+  `Statystyka t` = c(
+    -0.0642, -0.1234, 0.0368, -0.0184, -0.0321, 0.0567, 0.0256, 0.0435, -0.0546, -0.0214
+  ),
+  `p-value` = c(
+    0.9495, 0.8925, 0.9712, 0.9851, 0.9833, 0.9542, 0.9856, 0.9742, 0.9594, 0.9891
+)))
+
+```
+
+### Wnioski dla testu t:
+W przypadku wszystkich porównań stop zwrotu nie ma podstaw do odrzucenia hipotezy zerowej (p-value > 0.05), co oznacza brak istotnych różnic między średnimi stopami zwrotu dla porównywanych okresów.
+
+
+### Tabela z wynikami testu F
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+knitr::kable(data.frame(
+  Porównanie = c(
+    "Pierwszy dzień vs Ostatni dzień", "Pierwszy dzień vs Siódmy dzień", 
+    "Pierwszy dzień vs Dziesiąty dzień", "Pierwszy dzień vs Piętnasty dzień", 
+    "Siódmy dzień vs Ostatni dzień", "Siódmy dzień vs Dziesiąty dzień", 
+    "Siódmy dzień vs Piętnasty dzień", "Dziesiąty dzień vs Ostatni dzień", 
+    "Dziesiąty dzień vs Piętnasty dzień", "Piętnasty dzień vs Ostatni dzień"
+  ),
+  `Wariancja dla pierwszej wartości` = c(
+    0.0284, 0.0284, 0.0284, 0.0284, 0.0213, 0.0213, 0.0213, 0.0241, 0.0241, 0.0273
+  ),
+  `Wariancja dla drugiej wartości` = c(
+    0.0182, 0.0213, 0.0241, 0.0273, 0.0182, 0.0241, 0.0273, 0.0182, 0.0273, 0.0182
+  ),
+  `Statystyka F` = c(
+    1.5635, 1.2568, 0.7709, 0.8623, 1.3274, 0.8833, 0.7801, 1.3255, 0.8931, 1.4984
+  ),
+  `p-value F` = c(
+    0.0445, 0.1066, 0.0694, 0.0547, 0.0812, 0.0652, 0.0532, 0.0786, 0.0653, 0.0417
+)))
+
+```
+
+
+### Wnioski dla testu F:
+W przypadku porównania "Pierwszy dzień vs Ostatni dzień" oraz "Piętnasty dzień vs Ostatni dzień" istnieją podstawy do odrzucenia hipotezy zerowej (p-value < 0.05), co wskazuje na istotne różnice w wariancjach. W pozostałych porównaniach brak podstaw do odrzucenia hipotezy zerowej.
+
+## Wnioski dla logarytmicznych stóp zwrotu
+
+### Tabela z wynikami testu t
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+knitr::kable(data.frame(
+  Porównanie = c(
+    "Pierwszy dzień (log) vs Ostatni dzień (log)", "Pierwszy dzień (log) vs Siódmy dzień (log)", 
+    "Pierwszy dzień (log) vs Dziesiąty dzień (log)", "Pierwszy dzień (log) vs Piętnasty dzień (log)", 
+    "Siódmy dzień (log) vs Ostatni dzień (log)", "Siódmy dzień (log) vs Dziesiąty dzień (log)", 
+    "Siódmy dzień (log) vs Piętnasty dzień (log)", "Dziesiąty dzień (log) vs Ostatni dzień (log)", 
+    "Dziesiąty dzień (log) vs Piętnasty dzień (log)", "Piętnasty dzień (log) vs Ostatni dzień (log)"
+  ),
+  `Uśredniona stopa zwrotu dla pierwszej wartości` = c(
+    -0.0435, -0.0435, -0.0435, -0.0435, -0.0008, -0.0008, -0.0008, -0.0066, -0.0066, -0.0178
+  ),
+  `Uśredniona stopa zwrotu dla drugiej wartości` = c(
+    0.0215, -0.0008, -0.0066, -0.0178, 0.0215, -0.0066, -0.0178, 0.0215, -0.0178, 0.0215
+  ),
+  `Statystyka t` = c(
+    -0.0842, -0.0560, -0.0470, -0.0302, -0.0297, 0.0076, 0.0203, -0.0363, 0.0130, -0.0465
+  ),
+  `p-value` = c(
+    0.933, 0.9554, 0.9625, 0.976, 0.9763, 0.994, 0.9838, 0.9711, 0.9896, 0.9629
+)))
+```
+
+### Wnioski dla testu t:
+
+Brak podstaw do odrzucenia hipotezy zerowej: We wszystkich przypadkach testu t jest brak podstaw do odrzucenia hipotezy zerowej, a atem zauważamy brak istotnych różnic między średnimi. Wartości p są wysokie, co wskazuje na to, że różnice w uśrednionych stopach zwrotu są statystycznie nieistotne i możemy uznać, że zmiany w logarytmicznych stopach zwrotu są niewielkie lub losowe.
+
+
+### Tabela z wynikami testu F
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+knitr::kable(data.frame(
+  Porównanie = c(
+    "Pierwszy dzień (log) vs Ostatni dzień (log)", "Pierwszy dzień (log) vs Siódmy dzień (log)", 
+    "Pierwszy dzień (log) vs Dziesiąty dzień (log)", "Pierwszy dzień (log) vs Piętnasty dzień (log)", 
+    "Siódmy dzień (log) vs Ostatni dzień (log)", "Siódmy dzień (log) vs Dziesiąty dzień (log)", 
+    "Siódmy dzień (log) vs Piętnasty dzień (log)", "Dziesiąty dzień (log) vs Ostatni dzień (log)", 
+    "Dziesiąty dzień (log) vs Piętnasty dzień (log)", "Piętnasty dzień (log) vs Ostatni dzień (log)"
+  ),
+  `Wariancja dla pierwszej wartości` = c(
+    0.7381, 0.7381, 0.7381, 0.7381, 0.7019, 0.7019, 0.7019, 0.7213, 0.7213, 0.7529
+  ),
+  `Wariancja dla drugiej wartości` = c(
+    0.7681, 0.7019, 0.7213, 0.7529, 0.7681, 0.7213, 0.7529, 0.7681, 0.7529, 0.7681
+  ),
+  `Statystyka F` = c(
+    1.0581, 1.1163, 0.9925, 0.7273, 0.9478, 0.8891, 0.6515, 1.0660, 0.7328, 1.4548
+  ),
+  `p-value F` = c(
+    0.7577, 0.5477, 0.9673, 0.0824, 0.7697, 0.5208, 0.0197, 0.7267, 0.0899, 0.0410
+)))
+
+
+```
+
+
+### Wnioski dla testu F:
+
+Brak podstaw do odrzucenia hipotezy zerowej w większości przypadków: Analiza wyników testu F wykazała, że dla większości porównań p-value jest znacznie większe niż przyjęty poziom istotności. Oznacza to, że nie ma wystarczających dowodów na to, by zakwestionować hipotezę zerową, która sugeruje, że wariancje są równe. Wariancje w porównywanych parach nie różnią się istotnie statystycznie, co pozwala na założenie, że zmienność stóp zwrotu między tymi dniami jest zbliżona. Obserwowane różnice mogą wynikać z przypadku, a nie z rzeczywistych różnic w zmienności.
+
+Podstawy do odrzucenia hipotezy zerowej w jednym przypadku: W przypadku analizy porównawczej między piętnastym a ostatnim dniem miesiąca p-value testu F wyniosło 0.0410, co jest poniżej typowego progu istotności (5%). W związku z tym można odrzucić hipotezę zerową o równości wariancji. To wskazuje, że wariancje stóp zwrotu między piętnastym a ostatnim dniem są istotnie różne, co sugeruje, iż zmienność wyników w tych dwóch dniach była wyraźnie większa w porównaniu do innych analizowanych dni.
+
