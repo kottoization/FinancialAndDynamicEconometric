@@ -1,0 +1,1003 @@
+---
+title: "Projekt 2"
+author: "Maciej Nagły, Karol Kuciński, Mateusz Mulka"
+date: "2024-10-16"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(tidyverse)
+library(tseries)
+library(vars)
+library(ggplot2)
+library(knitr)
+library(readxl)
+library(e1071)
+library(lmtest)
+library(forecast)
+library(rugarch)
+sfs_dzienne <- read.csv("sfs_dzienne.csv")
+```
+
+# Wstęp
+W ramach przeprowadzonej analizy, obliczone zostały logarytmy cen oraz logarytmiczne stopy zwrotu, które stanowią podstawę do dalszych badań. Dopasowano model ARMA/ARIMA, weryfikując autokorelację składników losowych oraz istotność parametrów. Ostateczne prognozy logarytmicznych stóp zwrotu, logarytmów cen oraz cen zostały opracowane w oparciu o wyniki uzyskane z dopasowanego modelu oraz symulacje przeprowadzone za pomocą metod Monte Carlo i bootstrapowych.
+
+Podjęte działania miały na celu porównanie prognoz z rzeczywistymi wartościami oraz zbadanie wpływu efektu ARCH na dopasowany model ARMA-GARCH. Wyniki analizy dostarczają cennych informacji na temat zmienności cen oraz potencjalnych trendów, co może być istotne zarówno dla inwestorów, jak i analityków finansowych.
+
+# Obliczanie logarytmów cen i logarytmicznych stóp zwrotu
+
+### Logarytmiczne stopy zwrotu
+Logarytmiczna stopa zwrotu jest obliczana jako:
+$$
+\text{stopa logarytmiczna}_t = 100 \times \ln\left(\frac{P_t}{P_{t-1}}\right)
+$$
+gdzie \( P_t \) to cena zamknięcia w dniu \( t \).
+
+### Logarytmy cen
+Logarytm ceny zamknięcia w dniu \( t \):
+
+$$
+\log_{\text{zamkniecie}}(P_t) = \ln(P_t)
+$$
+
+
+```{r message=FALSE, warning=FALSE}
+calculate_log_return  <- function(data, column_name) {
+  new_data <- data %>%
+    mutate(stopa_logarytmiczna = 100 * (log(Zamkniecie / lag(Zamkniecie))))
+  new_data <- slice(new_data, -1) # Usunięcie pierwszego wiersza (z wartością NA)
+  new_data <- new_data[, c("Data", "stopa_logarytmiczna"), drop = FALSE]
+  return(new_data)
+}
+
+calculate_log_prices <- function(data, column_name) {
+  new_data <- data %>%
+    mutate(log_zamkniecie = log(!!sym(column_name))) # Dynamiczne odwołanie do kolumny
+  new_data <- new_data[, c("Data", "log_zamkniecie"), drop = FALSE] # Wybór odpowiednich kolumn
+  return(new_data)
+}
+
+
+log_return <- calculate_log_return(sfs_dzienne[1:272,], "Zamkniecie")
+log_prices <- calculate_log_prices(sfs_dzienne[1:273,], "Zamkniecie")
+
+log_return_porownanie <- calculate_log_return(sfs_dzienne[272:276,], "Zamkniecie")
+log_prices_porownanie <- calculate_log_prices(sfs_dzienne[273:276,], "Zamkniecie")
+
+normal_prices_porownanie <- sfs_dzienne[273:276,c(1,5)] 
+```
+
+
+# Modele ARMA/ARIMA
+
+
+Model ARMA (AutoRegressive Moving Average) i ARIMA (AutoRegressive Integrated Moving Average) to modele statystyczne wykorzystywane do analizy i prognozowania szeregów czasowych.
+
+*ARMA*
+Składniki:
+AR (AutoRegressive): Zależność przyszłych wartości od przeszłych wartości szeregu.
+MA (Moving Average): Zależność od przeszłych błędów prognozy (reszty).
+
+ARMA stosuje się do stacjonarnych szeregów czasowych, gdzie średnia i wariancja są stałe w czasie.
+
+*ARIMA*
+Jest rozszerzeniem ARMA dla niestacjonarnych szeregów czasowych.
+I (Integrated): Część modelu, która dokonuje różnicowania szeregu, aby uczynić go stacjonarnym.
+
+
+Dla logarytmicznych stóp zwrotu dopasowano model ARMA za pomocą funkcji automatycznego doboru parametrów. Model ARMA (autoregresyjno-ruchomej średniej) jest używany do modelowania czasowych zależności w szeregach czasowych. Dopasowany model minimalizuje kryterium informacyjne AIC, co pozwala na wybór optymalnych parametrów.
+
+```{r}
+
+# Dopasowanie modelu ARMA dla log_return
+model_arma <- auto.arima(log_return$stopa_logarytmiczna, seasonal = FALSE, stationary = TRUE)
+summary(model_arma)
+
+
+```
+### Interpretacja dla log_return:
+
+### ARIMA(2,0,2) - > ARMA(2,2)
+
+Funkcja auto.arima automatycznie dopasowuje najlepszy model ARIMA do danych, wybierając optymalne rzędy parametrów autoregresji (AR), różnicowania (I) i średniej ruchomej (MA) na podstawie kryterium informacyjnego AIC. W tym przypadku zwróciła model ARIMA(2,0,2), gdzie stopy zwrotu logarytmiczne są opisywane przez dwa opóźnienia autoregresyjne i dwa opóźnienia zakłóceń. 
+
+W tym przypadku funkcja auto.arima zwróciła model ARIMA(2,0,2), gdzie stopy zwrotu logarytmiczne są opisywane przez dwa opóźnienia autoregresyjne i dwa opóźnienia zakłóceń. 
+
+# Interpretacja testów diagnostycznych:
+
+
+### Test Ljunga-Boxa (autokorelacja reszt)
+
+H0: Brak autokorelacji reszt, czyli reszty modelu są białym szumem.
+H1: Istnieje autokorelacja reszt, czyli reszty nie są białym szumem.
+
+```{r message=FALSE, warning=FALSE}
+# Test Ljunga-Boxa dla reszt modelu ARMA
+ljung_box_test <- Box.test(residuals(model_arma), type = "Ljung-Box")
+print(ljung_box_test)
+```
+
+Test sprawdza, czy reszty modelu (różnice między rzeczywistymi wartościami a wartościami przewidywanymi przez model) są losowe (czyli nie mają autokorelacji). Hipoteza zerowa zakłada brak autokorelacji, czyli reszty są białym szumem. Wartość p-value z tego testu jest większa niż 0.05, oznacza to, że nie ma autokorelacji, a model dobrze wyjaśnia dane. To potwierdza, że model jest poprawny, a reszty nie wykazują zależności, które nie zostały uwzględnione w modelu.
+Reszty modelu ARIMA powinny być białym szumem, co oznacza, że wszelkie systematyczne zależności w danych zostały uchwycone przez model, a pozostałe "błędy" są przypadkowe i niezależne. Oznacza to, że model dobrze opisuje dane, a w resztach nie ma już strukturalnych zależności, które można by wykorzystać do dalszej poprawy modelu.
+
+
+### Test Shapiro-Wilka (normalność reszt)
+
+H0: Reszty modelu mają rozkład normalny.
+H1: Reszty modelu nie mają rozkładu normalnego.
+
+```{r message=FALSE, warning=FALSE}
+
+# Test Shapiro-Wilka dla reszt
+shapiro_test_arma <- shapiro.test(residuals(model_arma))
+print(shapiro_test_arma)
+
+# Wykresy diagnostyczne
+par(mfrow = c(2, 2))
+hist(residuals(model_arma), main = "Histogram reszt")
+qqnorm(residuals(model_arma))
+qqline(residuals(model_arma), col = "red")
+```
+
+Test Shapiro-Wilka zwraca wartość poniżej 0,05, co sugeruje, że hipoteza zerowa o normalności reszt musi zostać odrzucona. Reszty nie mają rozkładu normalnego, co może wskazywać na pewne niedopasowanie modelu lub obecność nieliniowych zależności.
+
+
+### Podsumowanie:
+Model ARIMA(2,0,2) dobrze wyjaśnia dane pod względem braku autokorelacji reszt (test Ljunga-Boxa).
+Reszty nie mają rozkładu normalnego (test Shapiro-Wilka), co może wskazywać na pewne ograniczenia modelu.
+
+
+### Logarytmy cen
+```{r}
+# Dopasowanie modelu ARIMA dla log_prices (ceny niestacjonarne)
+model_arima <- auto.arima(log_prices$log_zamkniecie, seasonal = FALSE)
+summary(model_arima)
+```
+Model ARIMA(2,1,2)
+
+### Interpretacja testów diagnostycznych:
+
+### Test Ljunga-Boxa (autokorelacja reszt)
+H0: Brak autokorelacji reszt, czyli reszty są białym szumem.
+H1: Istnieje autokorelacja reszt.
+
+```{r message=FALSE, warning=FALSE}
+# Test Ljunga-Boxa dla reszt modelu ARIMA
+ljung_box_test_arima <- Box.test(residuals(model_arima), type = "Ljung-Box")
+print(ljung_box_test_arima)
+```
+
+Test Ljunga-Boxa sprawdza, czy reszty modelu są losowe, co oznacza brak autokorelacji. Wynik testu daje 
+p-value = 0.9861, co jest znacznie wyższe niż poziom istotności 0.05. Oznacza to, że nie ma podstaw do odrzucenia hipotezy zerowej – reszty są losowe i nie wykazują autokorelacji.
+
+### Test Shapiro-Wilka (normalność reszt)
+H0: Reszty mają rozkład normalny.
+H1: Reszty nie mają rozkładu normalnego.
+
+```{r message=FALSE, warning=FALSE}
+# Test Shapiro-Wilka dla reszt ARIMA
+shapiro_test_arima <- shapiro.test(residuals(model_arima))
+print(shapiro_test_arima)
+
+# Wykresy diagnostyczne
+par(mfrow = c(2, 2))
+hist(residuals(model_arima), main = "Histogram reszt ARIMA")
+qqnorm(residuals(model_arima))
+qqline(residuals(model_arima), col = "red")
+```
+
+Wynik testu Shapiro-Wilka zwraca bardzo niskie p-value = 1.179e-10, co oznacza, że odrzucamy hipotezę zerową o normalności reszt. Sugeruje to, że reszty nie mają rozkładu normalnego, co może oznaczać, że niektóre założenia modelu nie są w pełni spełnione.
+
+### Podsumowanie:
+Model ARIMA(2,1,2) jest dobrze dopasowany, co potwierdza brak autokorelacji reszt (test Ljunga-Boxa). Z drugiej strony reszty nie są mają rozkładu normalnego (test Shapiro-Wilka).
+
+# Przewidywanie za pomoca modeli ARMA/ARIMA
+
+W ramach analizy przeprowadzono prognozę logarytmicznych stóp zwrotu na cztery kolejne notowania (punkty 272-275) za pomocą modelu ARIMA(2,0,2). Wyniki prognozy obejmują wartość punktową (Point Forecast) oraz przedziały ufności na poziomie 95% (Lo 95 i Hi 95), co oznacza, że przyszłe wartości z 95% prawdopodobieństwem znajdą się pomiędzy tymi przedziałami.
+```{r}
+
+# Prognoza dla logarytmicznych stóp zwrotu (do 4 notowań)
+forecast_log_return <- forecast(model_arma, h = 4, level = 95)
+print(forecast_log_return)
+
+# Wykres prognoz z przedziałami ufności
+plot(forecast_log_return)
+
+```
+
+Wskaźniki Lo 95 i Hi 95 oznaczają dolną (Lo) oraz górną (Hi) granicę przedziału ufności na poziomie 95%.
+
+Prognozy mają stosunkowo szerokie przedziały ufności, co wskazuje na dużą niepewność dotyczącą przyszłych wartości serii czasowej.
+Sugeruje to, że prognozy modelu są mało precyzyjne, a przyszłe wartości mogą znacznie różnić się od prognozowanych punktowo wartości.
+
+```{r}
+# Prognoza dla logarytmów cen (do 4 notowań)
+forecast_log_prices <- forecast(model_arima, h = 4, level = 95)
+print(forecast_log_prices)
+
+# Wykres prognoz z przedziałami ufności
+plot(forecast_log_prices)
+
+```
+Prognozy mają stosunkowo wąskie przedziały ufności, co wskazuje na dużą pewność dotyczącą przyszłych wartości logarytmów cen. Sugeruje to, że model jest dobrze dopasowany, a prognozowane wartości punktowe są precyzyjne i przyszłe notowania prawdopodobnie nie będą znacząco odbiegać od tych prognozowanych.
+
+### Porównanie
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+log_return_porownanie <- log_return_porownanie %>%
+  mutate(
+    point_forecast = forecast_log_return$mean,         
+    lower_bound = forecast_log_return$lower[,1],      
+    upper_bound = forecast_log_return$upper[,1]        
+  )
+
+```
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+log_prices_porownanie <- log_prices_porownanie %>%
+  mutate(
+    point_forecast = forecast_log_prices$mean,         
+    lower_bound = forecast_log_prices$lower[,1],      
+    upper_bound = forecast_log_prices$upper[,1]        
+  )
+```
+
+### Porównanie prognoz logarytmicznych stóp zwrotu i logarytmów cen
+
+#### Prognoza logarytmicznych stóp zwrotu
+Dla logarytmicznych stóp zwrotu w dniach od 2024-10-01 do 2024-10-04 wykorzystano model ARIMA(2,1,2) w celu uzyskania prognoz. Każda prognoza zawiera:
+- **Punktową prognozę** dla logarytmicznych stóp zwrotu (\( \hat{y}_t \)),
+- **95% przedział ufności**, definiowany przez wartości **dolnego** i **górnego przedziału**.
+
+| **Data**       | **Rzeczywista wartość** | **Prognoza punktowa** | **Dolny przedział ufności** | **Górny przedział ufności** |
+|----------------|-------------------------|------------------------|-----------------------------|-----------------------------|
+| 2024-10-01     | 2.2815                  | 0.3368                | -4.7955                     | 5.4692                      |
+| 2024-10-02     | -0.3766                 | -0.1683               | -5.3861                     | 5.0495                      |
+| 2024-10-03     | -0.9479                 | -0.4673               | -5.7059                     | 4.7714                      |
+| 2024-10-04     | -0.5731                 | -0.5210               | -5.7597                     | 4.7177                      |
+
+#### Prognoza logarytmów cen
+Dla logarytmów cen w tym samym okresie (2024-10-01 do 2024-10-04) zastosowano również model ARIMA(2,1,2). Prognozy te zawierają:
+- **Punktową prognozę** dla logarytmów cen (\( \hat{z}_t \)),
+- **95% przedział ufności** z wartościami **dolną** i **górną**.
+
+| **Data**       | **Rzeczywista wartość** | **Prognoza punktowa** | **Dolny przedział ufności** | **Górny przedział ufności** |
+|----------------|-------------------------|------------------------|-----------------------------|-----------------------------|
+| 2024-10-01     | -0.6311                 | -0.6363               | -0.6876                     | -0.5850                     |
+| 2024-10-02     | -0.6349                 | -0.6427               | -0.7089                     | -0.5766                     |
+| 2024-10-03     | -0.6444                 | -0.6479               | -0.7238                     | -0.5721                     |
+| 2024-10-04     | -0.6501                 | -0.6504               | -0.7349                     | -0.5660                     |
+
+#### Wnioski
+Porównanie rzeczywistych wartości logarytmicznych stóp zwrotu oraz logarytmów cen z ich prognozami punktowymi i przedziałami ufności pozwala ocenić dokładność modelu ARIMA(2,1,2). W przypadku logarytmicznych stóp zwrotu przedziały ufności są szersze, co wskazuje na większą zmienność i niepewność prognoz w porównaniu do prognoz dla logarytmów cen.
+
+
+# Monte Carlo 
+
+Metoda Monte Carlo to technika symulacyjna, która polega na generowaniu wielu losowych próbek w celu przewidzenia wyników dla modelu. W kontekście prognozowania szeregów czasowych, metoda Monte Carlo służy do symulowania możliwych przyszłych wartości, bazując na modelu oraz rozkładzie reszt (odchyleń od prognozowanych wartości).
+
+Monte Carlo zostało zastosowane do przewidzenia logarytmów cen oraz ich wartości rzeczywistych. Dla każdej z 1000 symulacji na okres 4 dni, generowane są losowe reszty oparte na odchyleniu standardowym modelu ARIMA. Wartości prognoz logarytmicznych cen (log_zamkniecie) są symulowane z tych reszt, a następnie przekształcane do rzeczywistych cen, co daje wgląd w ich przyszły zakres.
+
+
+### Logarytmy cen
+
+W celu prognozowania przyszłych cen zastosowano symulacje Monte Carlo oparte na modelu ARIMA. Wykorzystano ostatnią wartość logarytmu ceny oraz reszty z modelu do generowania prognoz logarytmicznych cen.
+
+
+
+```{r}
+n_simulations <- 1000  
+horizon <- 4  
+residuals_arima <- residuals(model_arima)  
+sigma <- sd(residuals_arima)  
+
+simulated_log_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+simulated_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+last_log_price <- tail(log_prices$log_zamkniecie, 1)
+
+set.seed(123)  
+
+for (i in 1:n_simulations) {
+  simulated_residuals <- rnorm(horizon, mean = 0, sd = sigma)
+  simulated_log_price <- last_log_price 
+  
+  for (j in 1:horizon) {
+    arima_forecast <- predict(model_arima, n.ahead = j)$pred[j]
+    simulated_log_price <- arima_forecast + simulated_residuals[j]
+    simulated_log_prices[j, i] <- simulated_log_price
+    simulated_price <- exp(simulated_log_price + ((sigma^2) / 2))
+    simulated_prices[j, i] <- simulated_price
+  }
+}
+
+
+mean_log_prices <- apply(simulated_log_prices, 1, mean)
+lower_bound_log_prices <- apply(simulated_log_prices, 1, quantile, probs = 0.025)
+upper_bound_log_prices <- apply(simulated_log_prices, 1, quantile, probs = 0.975)
+
+mean_prices <- apply(simulated_prices, 1, mean)
+lower_bound_prices <- apply(simulated_prices, 1, quantile, probs = 0.025)
+upper_bound_prices <- apply(simulated_prices, 1, quantile, probs = 0.975)
+
+normal_prices_porownanie$Monte_Carlo <- mean_prices
+normal_prices_porownanie$lower_bound_Monte_Carlo <- lower_bound_prices
+normal_prices_porownanie$upper_bound_Monte_Carlo <- upper_bound_prices
+
+```
+### Wyniki symulacji
+
+Poniżej przedstawiono wyniki symulacji dla logarytmów cen oraz dolne i górne granice przedziałów ufności dla prognozowanych wartości:
+
+| Data       | Zamknięcie | Monte Carlo | Dolna granica Monte Carlo | Górna granica Monte Carlo |
+|------------|------------|-------------|---------------------------|---------------------------|
+| 2024-10-01 | 0.532      | 0.5297      | 0.5028                    | 0.5567                    |
+| 2024-10-02 | 0.530      | 0.5260      | 0.5002                    | 0.5538                    |
+| 2024-10-03 | 0.525      | 0.5237      | 0.4964                    | 0.5507                    |
+| 2024-10-04 | 0.522      | 0.5224      | 0.4963                    | 0.5491                    |
+
+Wyniki symulacji pokazują, że prognozowane logarytmy cen na nadchodzące dni w zakresie czterech dni prezentują się następująco. Monte Carlo daje przedział ufności dla prognozowanych logarytmów cen, co pozwala na oszacowanie ryzyka związanego z przyszłymi wartościami. Średnie wartości dla każdego dnia zostały obliczone na podstawie 1000 symulacji, co zwiększa wiarygodność prognoz.
+
+Interpretując wyniki, widzimy, że średnie prognozy Monte Carlo (kolumna "Monte_Carlo") są bardzo zbliżone do rzeczywistych cen zamknięcia ("Zamkniecie"). Przedziały ufności (lower_bound_Monte_Carlo i upper_bound_Monte_Carlo) są stosunkowo wąskie, co oznacza, że przewidywane wartości są dość pewne, a krótkoterminowe wahania cen będą ograniczone w określonym zakresie.
+
+### Podsumowanie
+Symulacje Monte Carlo dostarczają użytecznych informacji na temat przyszłych cen na podstawie historycznych danych i modelu ARIMA. Dzięki zastosowaniu tego podejścia, możliwe jest uzyskanie przedziałów ufności, które mogą być pomocne w podejmowaniu decyzji inwestycyjnych.
+
+
+# Porównanie prognoz logarytmów cen
+
+W tej sekcji dokonujemy porównania prognoz logarytmów cen uzyskanych z modelu ARIMA z wartościami symulowanymi przy użyciu metody Monte Carlo. W celu oceny efektywności prognoz, do zestawienia dodano prognozowane logarytmy cen, dolne i górne granice przedziałów ufności.
+
+### Wykonanie porównania
+
+Do porównania zastosowano następujące dane:
+
+- **log_zamkniecie**: wartości logarytmów cen zamknięcia.
+- **point_forecast**: prognozowane logarytmy cen uzyskane z modelu ARIMA.
+- **lower_bound**: dolne wartości przedziału ufności dla prognozowanych logarytmów cen.
+- **upper_bound**: górne wartości przedziału ufności dla prognozowanych logarytmów cen.
+- **monte_carlo_forecast**: średnie wartości logarytmów cen uzyskane z symulacji Monte Carlo.
+
+
+```{r}
+log_prices_porownanie <- log_prices_porownanie %>%
+  mutate(
+    monte_carlo_forecast = mean_log_prices,           
+    monte_carlo_lower_bound = lower_bound_log_prices,      
+    monte_carlo_upper_bound = upper_bound_log_prices       
+  )
+
+```
+Zestawienie prognoz logarytmów cen wygląda następująco:
+
+| Data       | log_zamkniecie | Point Forecast | Dolna granica | Górna granica | Monte Carlo Forecast |
+|------------|----------------|----------------|----------------|----------------|----------------------|
+| 2024-10-01 | -0.6311        | -0.6363        | -0.6876        | -0.5850        | -0.6361              |
+| 2024-10-02 | -0.6349        | -0.6427        | -0.7089        | -0.5766        | -0.6431              |
+| 2024-10-03 | -0.6444        | -0.6479        | -0.7238        | -0.5721        | -0.6476              |
+| 2024-10-04 | -0.6501        | -0.6504        | -0.7349        | -0.5659        | -0.6499              |
+
+### Wnioski
+
+Porównanie pokazuje, jak prognozy z modelu ARIMA oraz symulacje Monte Carlo mogą współistnieć w ocenie przyszłych wartości logarytmów cen. Analiza tych danych pozwala na lepsze zrozumienie potencjalnych wahań oraz ryzyk związanych z inwestycjami. 
+
+
+### Logarytmiczne stopy zwrotu
+
+W tej sekcji przedstawiamy symulacje logarytmicznych stóp zwrotu, które zostały uzyskane przy użyciu modelu ARMA. W celu oceny ryzyka i niepewności, symulowano wartości stóp zwrotu na podstawie reszt modelu ARMA. Dla każdej symulacji, generowano losowe reszty oraz przewidywano logarytmiczne stopy zwrotu w oparciu o prognozy modelu ARMA.
+
+
+```{r}
+n_simulations <- 1000
+horizon <- 4  
+residuals_arma <- residuals(model_arma)
+sigma <- sd(residuals_arma)  
+simulated_log_returns <- matrix(NA, nrow = horizon, ncol = n_simulations)
+
+set.seed(123)  
+for (i in 1:n_simulations) {
+  simulated_residuals <- rnorm(horizon, mean = 0, sd = sigma)  
+  last_return <- tail(log_return$stopa_logarytmiczna, 1)  
+  
+  for (j in 1:horizon) {
+    arma_forecast <- predict(model_arma, n.ahead = j)$pred[j]  
+    last_return <- arma_forecast + simulated_residuals[j]
+    simulated_log_returns[j, i] <- last_return
+  }
+}
+
+
+mean_log_returns <- apply(simulated_log_returns, 1, mean)
+lower_bound_log_returns <- apply(simulated_log_returns, 1, quantile, probs = 0.025)
+upper_bound_log_returns <- apply(simulated_log_returns, 1, quantile, probs = 0.975)
+
+
+```
+### Porównanie
+
+```{r}
+log_return_porownanie <- log_return_porownanie %>%
+  mutate(
+    monte_carlo_forecast = mean_log_returns,          
+    monte_carlo_lower_bound = lower_bound_log_returns,      
+    monte_carlo_upper_bound = upper_bound_log_returns      
+  )
+
+```
+
+Poniżej przedstawiono zestawienie wartości logarytmicznych stóp zwrotu:
+
+| Data       | Stopa logarytmiczna | Punkt prognozy | Dolna granica | Górna granica | Prognoza Monte Carlo |
+|------------|----------------------|----------------|----------------|----------------|----------------------|
+| 2024-10-01 | 2.2814678            | 0.3368297      | -4.795508      | 5.469167       | 0.3604559            |
+| 2024-10-02 | -0.3766483           | -0.1682935     | -5.386075      | 5.049488       | -0.2023303           |
+| 2024-10-03 | -0.9478744           | -0.4672608     | -5.705913      | 4.771391       | -0.4307055           |
+| 2024-10-04 | -0.5730675           | -0.5210408     | -5.759740      | 4.717659       | -0.4710424           |
+
+### Wnioski
+
+Analizując wyniki, można zauważyć, że prognozy logarytmicznych stóp zwrotu uzyskane z modelu ARMA w większości przypadków mieszczą się w przedziale ufności prognoz Monte Carlo. Wartości prognoz Monte Carlo są znacznie bardziej rozproszone, co może sugerować wyższy poziom niepewności w tych prognozach. Różnice te mogą wynikać z odmiennych założeń przyjętych w obu metodach prognozowania. 
+
+
+# Metody bootsrapowe 
+
+Metody bootstrapowe dotyczą techniki statystycznej, która polega na wielokrotnym próbkowaniu reszt z modelu ARIMA w celu oszacowania rozkładu prognozowanych logarytmicznych cen.
+
+### Logarytmy cen
+
+```{r}
+n_simulations <- 1000  
+horizon <- 4  
+residuals_arima <- residuals(model_arima)  
+sigma <- sd(residuals_arima)  
+
+simulated_log_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+simulated_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+last_log_price <- tail(log_prices$log_zamkniecie, 1)
+
+set.seed(123)  
+
+for (i in 1:n_simulations) {
+  simulated_residuals <- sample(residuals_arima, size = horizon, replace = TRUE)
+  simulated_log_price <- last_log_price 
+  
+  for (j in 1:horizon) {
+    arima_forecast <- predict(model_arima, n.ahead = j)$pred[j]
+    simulated_log_price <- arima_forecast + simulated_residuals[j]
+    simulated_log_prices[j, i] <- simulated_log_price
+    simulated_price <- exp(simulated_log_price + ((sigma^2) / 2))
+    simulated_prices[j, i] <- simulated_price
+  }
+}
+
+
+mean_log_prices <- apply(simulated_log_prices, 1, mean)
+lower_bound_log_prices <- apply(simulated_log_prices, 1, quantile, probs = 0.025)
+upper_bound_log_prices <- apply(simulated_log_prices, 1, quantile, probs = 0.975)
+
+mean_prices <- apply(simulated_prices, 1, mean)
+lower_bound_prices <- apply(simulated_prices, 1, quantile, probs = 0.025)
+upper_bound_prices <- apply(simulated_prices, 1, quantile, probs = 0.975)
+
+normal_prices_porownanie$bootstrap <- mean_prices
+normal_prices_porownanie$lower_bound_bootstrap <- lower_bound_prices
+normal_prices_porownanie$upper_bound_bootstrap <- upper_bound_prices
+
+```
+
+### Wyniki
+
+Ostateczne prognozy cen zamknięcia uzyskane za pomocą metody bootstrapowej są przedstawione poniżej:
+
+| Data       | Zamknięcie | Prognoza Monte Carlo | Dolna granica Monte Carlo | Górna granica Monte Carlo | Prognoza Bootstrapowa | Dolna granica Bootstrapowa | Górna granica Bootstrapowa |
+|------------|------------|----------------------|---------------------------|---------------------------|------------------------|----------------------------|----------------------------|
+| 2024-10-01 | 0.532      | 0.5297236            | 0.5028060                 | 0.5567323                 | 0.530                  | 0.525                      | 0.535                      |
+| 2024-10-02 | 0.530      | 0.5260129            | 0.5001569                 | 0.5538443                 | 0.529                  | 0.524                      | 0.534                      |
+| 2024-10-03 | 0.525      | 0.5236753            | 0.4963992                 | 0.5506573                 | 0.527                  | 0.522                      | 0.532                      |
+| 2024-10-04 | 0.522      | 0.5224313            | 0.4962873                 | 0.5490881                 | 0.525                  | 0.520                      | 0.530                      |
+
+Zarówno metody Monte Carlo, jak i bootstrapowe wskazują na niewielkie wahania cen w prognozowanym okresie, z umiarkowanym poziomem niepewności, co sugeruje stabilność rynku w tym czasie.
+
+### Porównanie
+
+```{r}
+log_prices_porownanie <- log_prices_porownanie %>%
+  mutate(
+    bootstrap_forecast = mean_log_prices,           
+    bootstrap_lower_bound = lower_bound_log_prices, 
+    bootstrap_upper_bound = upper_bound_log_prices 
+  )
+
+```
+
+W tej sekcji porównaliśmy prognozy logarytmicznych cen zamknięcia uzyskane za pomocą dwóch metod: Monte Carlo oraz bootstrapowej. Poniżej przedstawiono dane dotyczące prognoz dla horyzontu 4 dni:
+
+| Data       | Logarytmiczne zamknięcie | Prognoza punktowa | Dolna granica | Górna granica | Prognoza Monte Carlo |
+|------------|---------------------------|-------------------|---------------|---------------|----------------------|
+| 2024-10-01 | -0.6311118                | -0.6362900        | -0.6875697    | -0.5850103    | -0.6360543           |
+| 2024-10-02 | -0.6348783                | -0.6427445        | -0.7089189    | -0.5765702    | -0.6430840           |
+| 2024-10-03 | -0.6443570                | -0.6479192        | -0.7237688    | -0.5720697    | -0.6475546           |
+| 2024-10-04 | -0.6500877                | -0.6504457        | -0.7349375    | -0.5659539    | -0.6499470           |
+
+Dodatkowo, dla każdej daty obliczone zostaly prognozy uzyskane z metody bootstrapowej:
+
+| Data       | Prognoza bootstrapowa | Dolna granica bootstrapowa | Górna granica bootstrapowa |
+|------------|-----------------------|----------------------------|----------------------------|
+| 2024-10-01 | 0.532                 | 0.5297236                  | 0.5567323                  |
+| 2024-10-02 | 0.530                 | 0.5260129                  | 0.5538443                  |
+| 2024-10-03 | 0.525                 | 0.5236753                  | 0.5506573                  |
+| 2024-10-04 | 0.522                 | 0.5224313                  | 0.5490881                  |
+
+### Wnioski
+
+Porównując prognozy uzyskane za pomocą metod Monte Carlo i bootstrapowej, zauważamy, że wyniki są zbliżone. Prognozy punktowe oraz przedziały ufności są w miarę spójne między tymi dwiema metodami. Zastosowanie obu metod potwierdza stabilność prognoz logarytmicznych cen zamknięcia, co jest istotne w kontekście analizy ryzyka oraz podejmowania decyzji inwestycyjnych.
+
+### Logarytmiczne stopy zwrotu
+
+```{r}
+n_simulations <- 1000
+horizon <- 4  
+residuals_arma <- residuals(model_arma)  
+simulated_log_returns <- matrix(NA, nrow = horizon, ncol = n_simulations)
+
+set.seed(123)  
+for (i in 1:n_simulations) {
+  simulated_residuals <- sample(residuals_arma, size = horizon, replace = TRUE)
+  simulated_log_return <- tail(log_return$stopa_logarytmiczna, 1)
+  
+  for (j in 1:horizon) {
+    arma_forecast <- predict(model_arma, n.ahead = j)$pred[j]
+    simulated_log_return <- arma_forecast + simulated_residuals[j]
+    simulated_log_returns[j, i] <- simulated_log_return
+  }
+}
+
+
+mean_log_returns <- apply(simulated_log_returns, 1, mean)
+lower_bound_log_returns <- apply(simulated_log_returns, 1, quantile, probs = 0.025)
+upper_bound_log_returns <- apply(simulated_log_returns, 1, quantile, probs = 0.975)
+
+```
+
+Ostatecznie, wyniki dla każdej daty przedstawiają się następująco:
+
+| Data       | Logarytmiczne stopy zwrotu | Prognoza punktowa | Dolna granica | Górna granica |
+|------------|------------------------------|-------------------|---------------|---------------|
+| 2024-10-01 | 2.2814678                    | 0.3368297         | -4.795508     | 5.469167      |
+| 2024-10-02 | -0.3766483                   | -0.1682935        | -5.386075     | 5.049488      |
+| 2024-10-03 | -0.9478744                   | -0.4672608        | -5.705913     | 4.771391      |
+| 2024-10-04 | -0.5730675                   | -0.5210408        | -5.759740     | 4.717659      |
+
+### Wnioski
+
+Analiza logarytmicznych stóp zwrotu wskazuje na dużą zmienność prognoz. Zauważalne są zarówno pozytywne, jak i negatywne wartości stóp zwrotu, co może sugerować różnorodne czynniki wpływające na rynek. 
+
+
+### Porównanie
+
+```{r}
+
+log_return_porownanie <- log_return_porownanie %>%
+  mutate(
+    bootstrap_forecast = mean_log_returns,           
+    bootstrap_lower_bound = lower_bound_log_returns, 
+    bootstrap_upper_bound = upper_bound_log_returns  
+  )
+
+```
+
+W tabeli przedstawiono wartości stóp zwrotu, prognozy punktowe oraz dolne i górne granice dla każdej z metod.
+
+| Data       | Stopa logarytmiczna | Prognoza punktowa | Dolna granica | Górna granica | Prognoza Monte Carlo |
+|------------|----------------------|-------------------|---------------|---------------|----------------------|
+| 2024-10-01 | 2.2814678            | 0.3368297         | -4.795508     | 5.469167      | 0.3604559            |
+| 2024-10-02 | -0.3766483           | -0.1682935        | -5.386075     | 5.049488      | -0.2023303           |
+| 2024-10-03 | -0.9478744           | -0.4672608        | -5.705913     | 4.771391      | -0.4307055           |
+| 2024-10-04 | -0.5730675           | -0.5210408        | -5.759740     | 4.717659      | -0.4710424           |
+
+### Wnioski
+
+Analiza porównawcza wykazała, że prognozy punktowe dla logarytmicznych stóp zwrotu różnią się w zależności od zastosowanej metody. Zauważalne są znaczne rozbieżności pomiędzy dolnymi i górnymi granicami prognoz, co wskazuje na wysoką zmienność i niepewność w przewidywanych wartościach stóp zwrotu. Metoda bootstrapowa w niektórych przypadkach generuje bardziej konserwatywne prognozy w porównaniu do metody Monte Carlo.
+
+Zarówno metody Monte Carlo, jak i bootstrapowe wykazały znaczną zmienność w prognozowanych wartościach, co podkreśla istotność uwzględniania niepewności w modelach finansowych. Ostatecznie, wyniki prognoz mogą służyć jako fundament do dalszej analizy ryzyka oraz planowania strategii inwestycyjnych, a także do testowania stabilności modeli w kontekście zmieniających się warunków rynkowych.
+
+# ARMA-GARCH
+
+Model **ARMA-GARCH** łączy autoregresję (AR) i średnią ruchomą (MA) z komponentem GARCH, który modeluje zmienność zmieniającą się w czasie. Taki model jest szczególnie użyteczny w analizie finansowej, gdzie często występują zjawiska okresowej zmienności (heteroskedastyczność), charakterystyczne dla danych takich jak logarytmiczne stopy zwrotu.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Parametry początkowe dla testowania logarytmów cen
+spec_price <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(1, 1), include.mean = TRUE),
+  distribution.model = "norm"
+)
+
+# Dopasowanie modelu do logarytmów cen
+fit_price <- ugarchfit(spec = spec_price, data = log_prices$log_zamkniecie)
+
+
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+# Parametry początkowe dla testowania logarytmicznych stóp zwrotu
+spec_return <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(1, 1), include.mean = TRUE),
+  distribution.model = "norm"
+)
+
+# Dopasowanie modelu do logarytmicznych stóp zwrotu
+fit_return <- ugarchfit(spec = spec_return, data = log_return$stopa_logarytmiczna)
+```
+### Wybór modelu ARMA-GARCH
+
+Dla obu przypadków – zarówno logarytmów cen, jak i logarytmicznych stóp zwrotu – został wybrany model **ARMA(1,1)-GARCH(1,1)**. Model ten pozwala uchwycić zarówno autokorelację w średniej, jak i efekt ARCH w zmienności warunkowej, co czyni go odpowiednim wyborem dla analizowanych szeregów czasowych.
+
+Model ten można zapisać jako:
+
+\[
+Y_t = \mu + \phi Y_{t-1} + \theta \varepsilon_{t-1} + \varepsilon_t
+\]
+
+gdzie:
+\[
+\varepsilon_t = \sigma_t Z_t
+\]
+
+oraz 
+
+\[
+\sigma_t^2 = \alpha_0 + \alpha_1 \varepsilon_{t-1}^2 + \beta_1 \sigma_{t-1}^2
+\]
+
+gdzie:
+
+- \( Y_t \) to logarytm cen lub logarytmiczna stopa zwrotu,
+
+- \( \phi \) oraz \( \theta \) to parametry modelu ARMA(1,1),
+
+- \( \sigma_t^2 \) to zmienność warunkowa modelowana przez GARCH(1,1),
+
+- \( \alpha_0 \), \( \alpha_1 \) i \( \beta_1 \) to parametry modelu GARCH,
+
+- \( Z_t \sim N(0,1) \) reprezentuje białe szumy z rozkładem normalnym.
+
+
+Model ARMA-GARCH pozwala lepiej opisać zmienność i niestabilność w szeregach czasowych finansowych, które często charakteryzują się efektem ARCH.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# przypisujemy model ARMA-GARCH
+spec <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(1, 1), include.mean = TRUE),
+  distribution.model = "norm"
+)
+
+# Dopasowanie modelu ARMA-GARCH do logarytmicznych stóp zwrotu
+fit_log_returns <- ugarchfit(spec = spec, data = log_return$stopa_logarytmiczna)
+forecast_log_returns <- ugarchforecast(fit_log_returns, n.ahead = 4)
+mean_forecast_log_returns <- fitted(forecast_log_returns)
+lower_bound_log_returns <- mean_forecast_log_returns - 1.96 * sigma(forecast_log_returns)
+upper_bound_log_returns <- mean_forecast_log_returns + 1.96 * sigma(forecast_log_returns)
+
+# Dopasowanie modelu ARMA-GARCH do logarytmów cen
+fit_log_prices <- ugarchfit(spec = spec, data = log_prices$log_zamkniecie)
+forecast_log_prices <- ugarchforecast(fit_log_prices, n.ahead = 4)
+mean_forecast_log_prices <- fitted(forecast_log_prices)
+lower_bound_log_prices <- mean_forecast_log_prices - 1.96 * sigma(forecast_log_prices)
+upper_bound_log_prices <- mean_forecast_log_prices + 1.96 * sigma(forecast_log_prices)
+
+# Konwersja prognozy logarytmów cen do poziomu cenowego
+mean_forecast_prices <- exp(mean_forecast_log_prices)
+lower_bound_prices <- exp(lower_bound_log_prices)
+upper_bound_prices <- exp(upper_bound_log_prices)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Porównanie prognozowanych wartości z rzeczywistymi dla logarytmicznych stóp zwrotu
+log_return_porownanie <- data.frame(
+  Data = log_return$Data[268:271],
+  rzeczywiste_stopy = log_return$stopa_logarytmiczna[268:271],
+  prognoza_log_returns = mean_forecast_log_returns,
+  dolny_przedzial_log_returns = lower_bound_log_returns,
+  gorny_przedzial_log_returns = upper_bound_log_returns
+)
+```
+
+### Porównanie prognoz logarytmicznych stóp zwrotu
+
+W celu prognozowania logarytmicznych stóp zwrotu wykorzystano model ARMA-GARCH (1,1) z rozkładem normalnym reszt. Prognozy przeprowadzono na czterodniowym horyzoncie, obejmując dni od T+1 do T+4. Dla każdej prognozy wyznaczono przedziały ufności na poziomie 95%, które pozwalają oszacować możliwy zakres wartości logarytmicznych stóp zwrotu przy uwzględnieniu zmienności modelu.
+
+Poniżej przedstawiono tabelaryczne zestawienie prognozowanych logarytmicznych stóp zwrotu z rzeczywistymi wartościami:
+
+
+| **Data**      | **Rzeczywista Stopa Zwrotu** | **Prognoza Punktowa** | **Dolny Przedział UF (95%)** | **Górny Przedział UF (95%)** |
+|---------------|------------------------------|------------------------|------------------------------|------------------------------|
+| 2024-09-25 (T+1) | -0.5381                  | 0.0401                 | -4.1740                      | 4.2541                       |
+| 2024-09-26 (T+2) | -4.4125                  | -0.1187                | -4.3295                      | 4.0921                       |
+| 2024-09-27 (T+3) | -3.4420                  | -0.1706                | -4.3781                      | 4.0370                       |
+| 2024-09-30 (T+4) | 1.1606                   | -0.1875                | -4.3918                      | 4.0169                       |
+
+Na podstawie wyników prognozy można zaobserwować, że szerokie przedziały ufności dla prognozowanych wartości wskazują na wysoką niepewność związaną z przyszłymi wartościami logarytmicznych stóp zwrotu. Możemy jednak zauważyć sugestię spadku ceny w prognozie punktowej.
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Porównanie prognozowanych wartości z rzeczywistymi dla logarytmów cen oraz poziomu cenowego
+log_prices_porownanie <- data.frame(
+  Data = log_prices$Data[270:273],
+  rzeczywiste_log_ceny = log_prices$log_zamkniecie[270:273],
+  prognoza_log_prices = mean_forecast_log_prices,
+  dolny_przedzial_log_prices = lower_bound_log_prices,
+  gorny_przedzial_log_prices = upper_bound_log_prices,
+  rzeczywiste_ceny = exp(log_prices$log_zamkniecie[270:273]),
+  prognoza_ceny = mean_forecast_prices,
+  dolny_przedzial_ceny = lower_bound_prices,
+  gorny_przedzial_ceny = upper_bound_prices
+)
+
+```
+
+### Porównanie prognoz logarytmów cen
+
+W celu prognozowania logarytmów cen wykorzystano model ARMA-GARCH (1,1) z rozkładem normalnym reszt. Prognozy przeprowadzono na czterodniowym horyzoncie, obejmując dni od T+1 do T+4. Dla każdej prognozy wyznaczono przedziały ufności na poziomie 95%, co pozwala oszacować możliwy zakres wartości logarytmów cen przy uwzględnieniu zmienności modelu.
+
+Poniżej przedstawiono tabelaryczne zestawienie prognozowanych logarytmów cen oraz rzeczywistych wartości:
+
+| **Data**       | **Rzeczywisty Log Ceny** | **Prognoza Punktowa** | **Dolny Przedział UF (95%)** | **Górny Przedział UF (95%)** |
+|----------------|--------------------------|------------------------|------------------------------|------------------------------|
+| 2024-09-26 (T+1) | -0.6311              | -0.6349               | -0.6850                      | -0.5847                      |
+| 2024-09-27 (T+2) | -0.6655              | -0.6349               | -0.6850                      | -0.5847                      |
+| 2024-09-30 (T+3) | -0.6539              | -0.6349               | -0.6850                      | -0.5847                      |
+| 2024-10-01 (T+4) | -0.6311              | -0.6349               | -0.6850                      | -0.5847                      |
+
+Na podstawie wyników prognozy można zaobserwować, że rzeczywiste wartości logarytmów cen są zgodne z prognozowanymi przedziałami ufności, co wskazuje na adekwatność modelu w krótkoterminowym prognozowaniu logarytmów cen. Wartości punktowe prognozy pokazują stabilność, podczas gdy wąskie przedziały ufności wskazują na relatywnie niską niepewność modelu w tym okresie.
+
+# Monte Carlo dla ARMA-GARCH
+
+### Logarytmiczne stopy zwrotu
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Dopasowanie modelu ARMA(1,1)-GARCH(1,1) do logarytmicznych stóp zwrotu
+fit_log_returns <- ugarchfit(spec = spec, data = log_return$stopa_logarytmiczna)
+
+# Parametry symulacji Monte Carlo
+n_simulations <- 1000  # liczba symulacji
+horizon <- 4  # prognoza na 4 notowania
+
+# Inicjalizacja macierzy do przechowywania wyników symulacji
+simulated_log_returns <- matrix(NA, nrow = horizon, ncol = n_simulations)
+
+# Wartość początkowa logarytmicznych stóp zwrotu (ostatnia obserwacja)
+last_log_return <- tail(log_return$stopa_logarytmiczna, 1)
+
+# Symulacje Monte Carlo
+set.seed(123)  # ustalenie ziarna dla powtarzalności
+for (i in 1:n_simulations) {
+  sim <- ugarchsim(fit_log_returns, n.sim = horizon)
+  simulated_log_returns[, i] <- last_log_return + fitted(sim)
+}
+
+# Obliczenie średnich prognoz oraz przedziałów ufności
+mean_log_returns <- apply(simulated_log_returns, 1, mean)
+lower_bound_log_returns <- apply(simulated_log_returns, 1, quantile, probs = 0.025)
+upper_bound_log_returns <- apply(simulated_log_returns, 1, quantile, probs = 0.975)
+
+# Porównanie prognozowanych wartości z rzeczywistymi logarytmicznymi stopami zwrotu
+monte_carlo_log_return_porownanie <- data.frame(
+  Data = log_return$Data[268:271],
+  rzeczywiste_stopy = log_return$stopa_logarytmiczna[268:271],
+  prognoza_monte_carlo_log_returns = mean_log_returns,
+  dolny_przedzial_monte_carlo_log_returns = lower_bound_log_returns,
+  gorny_przedzial_monte_carlo_log_returns = upper_bound_log_returns
+)
+
+```
+
+W celu prognozowania logarytmicznych stóp zwrotu przeprowadzono symulacje Monte Carlo na podstawie modelu ARMA(1,1)-GARCH(1,1) z rozkładem normalnym reszt. Prognozy wygenerowano na czterodniowym horyzoncie (obejmując dni od T+1 do T+4) przy zastosowaniu 1000 symulacji. Dla każdej prognozy wyznaczono punktową prognozę logarytmicznych stóp zwrotu oraz 95% przedziały ufności, co pozwala oszacować zakres wartości przy uwzględnieniu zmienności modelu.
+
+Poniżej przedstawiono tabelaryczne zestawienie rzeczywistych logarytmicznych stóp zwrotu oraz prognoz uzyskanych metodą Monte Carlo:
+
+| **Data**       | **Rzeczywista Stopa Zwrotu** | **Prognoza Monte Carlo** |
+|----------------|------------------------------|---------------------------|
+| 2024-09-25 (T+1) | -0.5381                  | 0.9649                    |
+| 2024-09-26 (T+2) | -4.4125                  | 0.9648                    |
+| 2024-09-27 (T+3) | -3.4420                  | 0.9649                    |
+| 2024-09-30 (T+4) | 1.1606                   | 0.9649                    |
+
+Analiza wyników wskazuje na znaczną różnicę między rzeczywistymi wartościami logarytmicznych stóp zwrotu a prognozami punktowymi uzyskanymi metodą Monte Carlo, co może sugerować niedoszacowanie zmienności przez model. Pomimo uwzględnienia zmienności warunkowej, model ARMA-GARCH nie uchwycił w pełni rzeczywistego zakresu fluktuacji, co może wymagać dalszej kalibracji modelu lub zastosowania alternatywnych rozkładów dla reszt.
+
+
+### Logarytmy cen 
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Dopasowanie modelu do logarytmów cen
+fit <- ugarchfit(spec = spec, data = log_prices$log_zamkniecie)
+
+# Parametry symulacji Monte Carlo
+n_simulations <- 1000  # liczba symulacji
+horizon <- 4  # prognoza na 4 notowania
+
+# Inicjalizacja macierzy do przechowywania wyników symulacji
+simulated_log_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+simulated_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+
+# Wartość początkowa logarytmu ceny (ostatnia obserwacja)
+last_log_price <- tail(log_prices$log_zamkniecie, 1)
+
+# Symulacje Monte Carlo
+set.seed(123)  # ustalenie ziarna dla powtarzalności
+for (i in 1:n_simulations) {
+  sim <- ugarchsim(fit, n.sim = horizon)
+  simulated_log_prices[, i] <- last_log_price + fitted(sim)
+  simulated_prices[, i] <- exp(simulated_log_prices[, i])
+}
+
+# Obliczenie średnich prognoz oraz przedziałów ufności
+mean_log_prices <- apply(simulated_log_prices, 1, mean)
+lower_bound_log_prices <- apply(simulated_log_prices, 1, quantile, probs = 0.025)
+upper_bound_log_prices <- apply(simulated_log_prices, 1, quantile, probs = 0.975)
+
+mean_prices <- apply(simulated_prices, 1, mean)
+lower_bound_prices <- apply(simulated_prices, 1, quantile, probs = 0.025)
+upper_bound_prices <- apply(simulated_prices, 1, quantile, probs = 0.975)
+
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Porównanie prognozowanych wartości z prognozami z punktu 3
+monte_carlo_porownanie <- data.frame(
+  Data = log_prices$Data[270:273],
+  rzeczywiste_log_ceny = log_prices$log_zamkniecie[270:273],
+  prognoza_monte_carlo_log_prices = mean_log_prices,
+  dolny_przedzial_monte_carlo_log_prices = lower_bound_log_prices,
+  gorny_przedzial_monte_carlo_log_prices = upper_bound_log_prices,
+  rzeczywiste_ceny = exp(log_prices$log_zamkniecie[270:273]),
+  prognoza_monte_carlo_ceny = mean_prices,
+  dolny_przedzial_monte_carlo_ceny = lower_bound_prices,
+  gorny_przedzial_monte_carlo_ceny = upper_bound_prices
+)
+```
+
+W ramach analizy przeprowadzono symulacje Monte Carlo przy użyciu dopasowanego modelu ARMA(1,1)-GARCH(1,1), aby wyznaczyć prognozy logarytmów cen na czterodniowym horyzoncie. Symulacje pozwoliły ocenić, jak zmienność wpływa na przyszłe wartości cenowe. Prognozy wykazały konsekwentne niedoszacowanie rzeczywistych wartości logarytmów cen, co sugeruje, że model może systematycznie zaniżać przewidywane wartości.
+
+| **Data**       | **Rzeczywisty Log Ceny** | **Prognoza Monte Carlo Log Ceny** |
+|----------------|--------------------------|-----------------------------------|
+| 2024-09-26     | -0.6311                  | -0.8138                           |
+| 2024-09-27     | -0.6655                  | -0.8142                           |
+| 2024-09-30     | -0.6539                  | -0.8137                           |
+| 2024-10-01     | -0.6311                  | -0.8133                           |
+
+Różnice między rzeczywistymi a prognozowanymi wartościami wskazują na potencjalne obszary poprawy modelu, takie jak kalibracja parametrów czy rozważenie alternatywnych rozkładów reszt, różnice te są jednak znacznie mniejsze niż we wcześniejszym przypadku. Stabilność prognozowanych wartości wskazuje na dobre uchwycenie ogólnej tendencji zmienności.
+
+# Metody Bootstrapowe dla ARMA-GARCH
+
+### Logarytmiczne stopy zwrotu
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Dopasowanie modelu ARMA-GARCH do logarytmicznych stóp zwrotu
+fit_returns <- ugarchfit(spec = spec, data = log_return$stopa_logarytmiczna)
+
+# Parametry bootstrap
+n_simulations <- 1000  # liczba symulacji
+horizon <- 4  # prognoza na 4 notowania
+
+# Inicjalizacja macierzy do przechowywania wyników symulacji bootstrap
+bootstrap_log_returns <- matrix(NA, nrow = horizon, ncol = n_simulations)
+
+# Wartość początkowa logarytmicznych stóp zwrotu (ostatnia obserwacja)
+last_log_return <- tail(log_return$stopa_logarytmiczna, 1)
+
+# Symulacje bootstrap dla logarytmicznych stóp zwrotu
+set.seed(123)
+for (i in 1:n_simulations) {
+  sampled_residuals <- sample(residuals(fit_returns), size = horizon, replace = TRUE)
+  forecast <- last_log_return
+  for (j in 1:horizon) {
+    arma_forecast <- fitted(ugarchforecast(fit_returns, n.ahead = j))[j]
+    forecast <- arma_forecast + sampled_residuals[j]
+    bootstrap_log_returns[j, i] <- forecast
+  }
+}
+
+# Obliczenie średnich prognoz oraz przedziałów ufności dla logarytmicznych stóp zwrotu
+mean_log_returns <- apply(bootstrap_log_returns, 1, mean)
+lower_bound_log_returns <- apply(bootstrap_log_returns, 1, quantile, probs = 0.025)
+upper_bound_log_returns <- apply(bootstrap_log_returns, 1, quantile, probs = 0.975)
+
+# Zestawienie wyników prognoz
+bootstrap_return_comparison <- data.frame(
+  Data = log_return$Data[268:271],
+  rzeczywiste_stopy = log_return$stopa_logarytmiczna[268:271],
+  prognoza_bootstrap_log_returns = mean_log_returns,
+  dolny_przedzial_bootstrap_log_returns = lower_bound_log_returns,
+  gorny_przedzial_bootstrap_log_returns = upper_bound_log_returns
+)
+
+
+```
+
+W celu prognozowania logarytmicznych stóp zwrotu wykorzystano metodę bootstrap na podstawie dopasowanego modelu ARMA(1,1)-GARCH(1,1). Prognozy wygenerowano na czterodniowym horyzoncie (T+1 do T+4), stosując 1000 symulacji bootstrapowych, aby wyznaczyć punktowe prognozy oraz 95% przedziały ufności.
+
+Poniżej przedstawiono tabelaryczne zestawienie rzeczywistych wartości logarytmicznych stóp zwrotu oraz prognoz uzyskanych metodą bootstrap:
+
+| **Data**       | **Rzeczywista Stopa Zwrotu** | **Prognoza Bootstrap** | **Dolny Przedział UF (95%)** | **Górny Przedział UF (95%)** |
+|----------------|------------------------------|-------------------------|------------------------------|------------------------------|
+| 2024-09-25 (T+1) | -0.5381                  | 0.3741                  | -1.2335                      | 1.9817                       |
+| 2024-09-26 (T+2) | -4.4125                  | -0.1511                 | -1.8723                      | 1.5701                       |
+| 2024-09-27 (T+3) | -3.4420                  | -0.1258                 | -1.8954                      | 1.6439                       |
+| 2024-09-30 (T+4) | 1.1606                   | -0.4698                 | -2.2459                      | 1.3063                       |
+
+Wyniki prognozy metodą bootstrap wykazują znaczące różnice między rzeczywistymi wartościami logarytmicznych stóp zwrotu a prognozowanymi wartościami punktowymi. Prognozy bootstrapowe wykazują tendencję do stabilizacji wokół niskich wartości, co może świadczyć o tym, że model ARMA-GARCH nie w pełni uwzględnia dynamiczne zmiany występujące w rzeczywistych danych. Zastosowanie metody bootstrap pozwoliło jednak uzyskać bardziej szczegółowe przedziały ufności, które uwzględniają niepewność i zmienność danych.
+
+### Logarytmy cen
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Dopasowanie modelu ARMA-GARCH do logarytmów cen
+fit_price <- ugarchfit(spec = spec, data = log_prices$log_zamkniecie)
+
+# Inicjalizacja macierzy do przechowywania wyników symulacji bootstrap
+bootstrap_log_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+bootstrap_prices <- matrix(NA, nrow = horizon, ncol = n_simulations)
+
+# Wartość początkowa logarytmu ceny (ostatnia obserwacja)
+last_log_price <- tail(log_prices$log_zamkniecie, 1)
+
+# Symulacje bootstrap dla logarytmów cen
+set.seed(123)
+for (i in 1:n_simulations) {
+  sampled_residuals <- sample(residuals(fit_price), size = horizon, replace = TRUE)
+  forecast <- last_log_price
+  for (j in 1:horizon) {
+    arma_forecast <- fitted(ugarchforecast(fit_price, n.ahead = j))[j]
+    forecast <- arma_forecast + sampled_residuals[j]
+    bootstrap_log_prices[j, i] <- forecast
+    bootstrap_prices[j, i] <- exp(forecast)
+  }
+}
+
+# Obliczenie średnich prognoz oraz przedziałów ufności dla logarytmów cen i cen
+mean_log_prices <- apply(bootstrap_log_prices, 1, mean)
+lower_bound_log_prices <- apply(bootstrap_log_prices, 1, quantile, probs = 0.025)
+upper_bound_log_prices <- apply(bootstrap_log_prices, 1, quantile, probs = 0.975)
+
+mean_prices <- apply(bootstrap_prices, 1, mean)
+lower_bound_prices <- apply(bootstrap_prices, 1, quantile, probs = 0.025)
+upper_bound_prices <- apply(bootstrap_prices, 1, quantile, probs = 0.975)
+
+# Zestawienie wyników prognoz
+bootstrap_price_comparison <- data.frame(
+  Data = log_prices$Data[270:273],
+  rzeczywiste_log_ceny = log_prices$log_zamkniecie[270:273],
+  prognoza_bootstrap_log_prices = mean_log_prices,
+  dolny_przedzial_bootstrap_log_prices = lower_bound_log_prices,
+  gorny_przedzial_bootstrap_log_prices = upper_bound_log_prices,
+  rzeczywiste_ceny = exp(log_prices$log_zamkniecie[270:273]),
+  prognoza_bootstrap_ceny = mean_prices,
+  dolny_przedzial_bootstrap_ceny = lower_bound_prices,
+  gorny_przedzial_bootstrap_ceny = upper_bound_prices
+)
+```
+
+W celu prognozowania logarytmów cen przeprowadzono symulacje bootstrapowe na podstawie dopasowanego modelu ARMA(1,1)-GARCH(1,1). Prognozy wygenerowano na czterodniowym horyzoncie, obejmując dni od T+1 do T+4, z zastosowaniem 1000 symulacji, aby uzyskać punktowe prognozy oraz 95% przedziały ufności dla wartości logarytmów cen oraz poziomu cen.
+
+Poniżej przedstawiono tabelaryczne zestawienie rzeczywistych logarytmów cen, prognoz uzyskanych metodą bootstrap oraz przedziałów ufności:
+
+| **Data**       | **Rzeczywisty Log Ceny** | **Prognoza Bootstrap Log Ceny** | **Dolny Przedział UF (95%)** | **Górny Przedział UF (95%)** |
+|----------------|--------------------------|---------------------------------|------------------------------|------------------------------|
+| 2024-09-26 (T+1) | -0.6311              | -0.6365                         | -0.6849                      | -0.5847                      |
+| 2024-09-27 (T+2) | -0.6655              | -0.6362                         | -0.6849                      | -0.5847                      |
+| 2024-09-30 (T+3) | -0.6539              | -0.6366                         | -0.6849                      | -0.5847                      |
+| 2024-10-01 (T+4) | -0.6311              | -0.6380                         | -0.6849                      | -0.5847                      |
+
+Prognozy logarytmów cen uzyskane metodą bootstrap są stabilne, jednak wykazują odchylenie od rzeczywistych wartości logarytmów cen, zwłaszcza dla dni T+2 i T+3. Obserwowane różnice mogą wynikać z niskiej elastyczności modelu w stosunku do bardziej dynamicznych zmian rzeczywistych cen. Metoda bootstrap pozwala jednak na bardziej szczegółową ocenę niepewności prognoz, dostarczając dodatkowych informacji o zmienności oraz ryzyku w krótkim okresie prognozy.
+
+
+
+# Podsumowanie
+
+Podsumowując, analiza przy użyciu modeli ARIMA (ARIMA(2,0,2) dla logarytmicznych stóp zwrotu i ARIMA(2,1,2) dla logarytmów cen) wykazała, że modele te dobrze odwzorowują zależności czasowe obu szeregów, co potwierdzają testy Ljunga-Boxa wskazujące na brak autokorelacji reszt. Brak normalności reszt w testach Shapiro-Wilka może jednak sugerować, że modele te nie wychwytują w pełni nieliniowych wzorców obecnych w danych.
+
+Aby uchwycić zmienność i nieliniowość, zastosowano modele ARMA-GARCH. W obu przypadkach modele ARMA-GARCH okazały się skuteczne w odwzorowywaniu struktury zmienności danych, co pozwoliło na precyzyjniejsze oszacowanie ryzyka i lepsze zrozumienie fluktuacji krótkoterminowych. Analiza wskazuje, że zastosowanie GARCH umożliwiło uchwycenie efektu „gronowania zmienności” (volatility clustering), typowego dla szeregów czasowych w finansach, gdzie okresy wysokiej zmienności przeplatają się z okresami stabilności. Dodatkowo w przypadku większości wyników model ARMA-GARCH wykazał wyższą trafność w opisie zmienności niż same modele ARIMA, co sugeruje ich przydatność w bardziej zaawansowanej prognozie ryzyka i analizie dynamiki cen.
+
